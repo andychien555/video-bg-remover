@@ -111,11 +111,12 @@ function scaleFrame(imageData, gW, gH, fullCanvas, fullCtx, scaledCanvas, scaled
  * @param {number} [opts.scale=1]  output scale factor
  * @param {number} [opts.skip=1]   keep every Nth frame
  * @param {number} [opts.lossless=0] 0 = lossy, 1 = lossless (bigger, exact)
+ * @param {number} [opts.alphaQuality=100] 0–100; lower = smaller alpha plane
  * @param {(done:number,total:number)=>void} [opts.onProgress]
  * @returns {Promise<Blob>}
  */
 export async function encodeAnimatedWebP(frames, opts) {
-  const { fps, quality, scale = 1, skip = 1, lossless = 0, onProgress } = opts;
+  const { fps, quality, scale = 1, skip = 1, lossless = 0, alphaQuality = 100, onProgress } = opts;
   if (!frames.length) throw new Error('沒有可轉換的影格');
 
   const srcW = frames[0].width, srcH = frames[0].height;
@@ -138,7 +139,9 @@ export async function encodeAnimatedWebP(frames, opts) {
     scaledCtx = scaledCanvas.getContext('2d', { willReadFrequently: true });
   }
 
-  const encodeOpts = { quality, lossless, method: 4, exact: 0, alpha_quality: 100 };
+  // method:6 = libwebp's slowest/smallest effort level (same visual quality,
+  // ~5–15% smaller than the default 4). alpha_quality trims the alpha plane.
+  const encodeOpts = { quality, lossless, method: 6, exact: 0, alpha_quality: alphaQuality };
   const anmfChunks = [];
   let anyAlpha = false;
 
@@ -177,7 +180,7 @@ const WEBP_CONTAINER_OVERHEAD = 44;
  * @returns {Promise<{bytes:number, perFrame:number, frameCount:number}>}
  */
 export async function estimateWebpBytes(sampleFrames, opts, outputFrameCount) {
-  const { quality, scale = 1, lossless = 0 } = opts;
+  const { quality, scale = 1, lossless = 0, alphaQuality = 100 } = opts;
   if (!sampleFrames.length || outputFrameCount <= 0) return { bytes: 0, perFrame: 0, frameCount: 0 };
 
   const srcW = sampleFrames[0].width, srcH = sampleFrames[0].height;
@@ -195,7 +198,8 @@ export async function estimateWebpBytes(sampleFrames, opts, outputFrameCount) {
     scaledCtx = scaledCanvas.getContext('2d', { willReadFrequently: true });
   }
 
-  const encodeOpts = { quality, lossless, method: 4, exact: 0, alpha_quality: 100 };
+  // Mirror encodeAnimatedWebP's settings so the estimate tracks real output.
+  const encodeOpts = { quality, lossless, method: 6, exact: 0, alpha_quality: alphaQuality };
   let sum = 0;
   for (const f of sampleFrames) {
     const img = needScale

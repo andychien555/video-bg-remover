@@ -26,7 +26,7 @@
 
   <section class="hero">
     <div class="hero-kicker">VIDEO&nbsp;MATTING&nbsp;TOOL — EST.&nbsp;2026</div>
-    <h1>影片去背，<br>逐幀精確。</h1>
+    <h1>影片去背，逐幀精確。</h1>
     <p class="subtitle">
       上傳影片 → 逐幀去背 → 一鍵輸出透明背景的動態 WebP（libwebp WASM，alpha 可靠）。
       也可匯出透明 WebM 或 PNG 序列。全程在瀏覽器內運算。
@@ -40,41 +40,48 @@
     </div>
   </section>
 
-  <!-- ── STEP 01 · SOURCE ───────────────────────────────── -->
-  <section class="panel" aria-labelledby="lbl-upload">
-    <div class="panel-head">
-      <span class="step">01</span>
-      <span class="panel-label" id="lbl-upload">SOURCE</span>
-      <span class="panel-hint">MP4 / WEBM / MOV</span>
-    </div>
+  <!-- ── STUDIO · preview (left) + controls (right) ─────── -->
+  <div class="studio">
 
-    <div class="upload-area" id="dropZone">
-      <span class="upload-glyph" aria-hidden="true">↑</span>
-      <strong>拖放影片，或點擊選擇檔案</strong>
-      <p>檔案不會離開你的瀏覽器</p>
-      <input type="file" id="fileInput" accept="video/*">
-    </div>
-  </section>
+  <!-- left column: live preview, sticky while you tune -->
+  <div class="studio-preview">
 
-  <!-- ── WORKSPACE · two viewports ──────────────────────── -->
+  <!-- ── WORKSPACE · two viewports (stacked) ────────────── -->
   <section class="workspace">
-    <div class="canvas-wrap">
+    <div class="canvas-wrap" id="dropZone">
       <div class="vp-bar">
-        <span class="vp-label">原始幀 · SOURCE</span>
+        <span class="vp-label">原始幀 · SOURCE<span class="vp-dims" id="srcMeta"></span></span>
         <span class="vp-meta" id="coordHint"></span>
       </div>
       <div class="vp-stage">
         <canvas id="srcCanvas" width="480" height="270" style="cursor:crosshair"></canvas>
+        <div class="vp-drop" id="dropPrompt">
+          <span class="upload-glyph" aria-hidden="true">↑</span>
+          <strong>拖放影片，或點擊選擇</strong>
+          <p>檔案不會離開你的瀏覽器</p>
+          <input type="file" id="fileInput" accept="video/*">
+        </div>
       </div>
     </div>
     <div class="canvas-wrap">
       <div class="vp-bar">
         <span class="vp-label" id="outLabel">去背預覽 · OUTPUT</span>
-        <span class="vp-meta vp-alpha">ALPHA</span>
+        <span class="vp-tools">
+          <span class="residue-readout"
+                title="仍可見、且仍接近背景色（黑底＝暗部）的像素佔比。把閾值拉高讓它趨近 0，代表背景已不帶殘留。">背景殘留 <span id="residueVal">—</span></span>
+          <label class="vp-switch" title="開啟後，會持續以螢光色標出殘留像素；不需要時關閉即可">
+            <input type="checkbox" id="residueToggle">
+            <span class="vp-switch-track"><span class="vp-switch-thumb"></span></span>
+            <span class="vp-switch-label">殘留</span>
+          </label>
+          <span class="vp-meta vp-alpha" id="alphaBadge" role="button" tabindex="0" aria-pressed="false"
+                title="點擊切換 Alpha 遮罩檢視：白＝不透明、純黑＝完全透明">ALPHA</span>
+        </span>
       </div>
       <div class="vp-stage">
         <canvas id="outCanvas" width="480" height="270"></canvas>
       </div>
+      <p class="vp-hint">打開「<b>殘留</b>」開關會持續以<span class="hl-chip">螢光色</span>標出殘留像素；點右上 <b>ALPHA</b> 可切到遮罩檢視（純黑＝完全透明）。</p>
     </div>
   </section>
 
@@ -83,6 +90,11 @@
     <input type="range" id="scrubber" min="0" value="0" step="1" aria-label="影格捲動">
     <span class="frame-label" id="frameLabel">0 / 0</span>
   </div>
+
+  </div><!-- /studio-preview -->
+
+  <!-- right column: tuning + export controls -->
+  <div class="studio-controls">
 
   <!-- ── STEP 02 · KEYING ───────────────────────────────── -->
   <section class="panel" aria-labelledby="lbl-key">
@@ -148,9 +160,45 @@
 
     <!-- shared output settings: WebP and PNG sequence -->
     <div class="seq-opts" id="webpOpts">
-      <label>縮放 <input type="range" id="seqScale" min="0.2" max="1" step="0.05" value="1"> <span class="val" id="seqScaleVal">100%</span></label>
-      <label>每幀間隔 <input type="range" id="seqSkip" min="1" max="10" step="1" value="1"> <span class="val" id="seqSkipVal">1幀</span></label>
-      <label>WebP 品質 <input type="range" id="webpQ" min="0" max="100" step="5" value="80"> <span class="val" id="webpQVal">80</span></label>
+      <div class="seq-row">
+        <span class="seq-head">
+          <span class="seq-name">輸出寬度</span>
+          <span class="info" tabindex="0" role="img" aria-label="輸出寬度說明"
+                data-tip="輸出影像的寬度（像素）。高度會依原始比例自動換算；上限為原始尺寸，不會放大。寬度越小、檔案越小。">i</span>
+        </span>
+        <span class="seq-val">
+          <input type="number" id="seqWidthInput" class="num-input" min="64" max="1920" step="2" aria-label="輸出寬度（像素）">
+          <span class="seq-unit">× <span id="seqHeightVal">—</span> px</span>
+        </span>
+        <input type="range" id="seqScale" min="64" max="1920" step="2" value="1920">
+      </div>
+      <div class="seq-row">
+        <span class="seq-head">
+          <span class="seq-name">輸出幀率</span>
+          <span class="info" tabindex="0" role="img" aria-label="輸出幀率說明"
+                data-tip="每秒輸出幾幀。數值越低、動態越省檔案但較不流暢，30fps 為原始流暢度。底層以 30fps 抽樣，故提供 30 / 15 / 10 / 6 / 5 這幾個整數倍率。">i</span>
+        </span>
+        <span class="seq-val" id="seqFpsVal">30fps</span>
+        <input type="range" id="seqFps" min="0" max="4" step="1" value="0">
+      </div>
+      <div class="seq-row">
+        <span class="seq-head">
+          <span class="seq-name">WebP 品質</span>
+          <span class="info" tabindex="0" role="img" aria-label="WebP 品質說明"
+                data-tip="彩色畫面的壓縮品質（0–100）。數值越高越清晰，檔案也越大。一般 75–85 已足夠。">i</span>
+        </span>
+        <span class="seq-val" id="webpQVal">80</span>
+        <input type="range" id="webpQ" min="0" max="100" step="5" value="80">
+      </div>
+      <div class="seq-row">
+        <span class="seq-head">
+          <span class="seq-name">透明邊緣品質</span>
+          <span class="info" tabindex="0" role="img" aria-label="透明邊緣品質說明"
+                data-tip="透明度（alpha）通道的壓縮品質（0–100）。越高，去背邊緣越乾淨銳利、半透明鋸齒越少。">i</span>
+        </span>
+        <span class="seq-val" id="webpAlphaQVal">90</span>
+        <input type="range" id="webpAlphaQ" min="0" max="100" step="5" value="90">
+      </div>
     </div>
 
     <!-- live size estimate for the animated WebP -->
@@ -197,21 +245,27 @@
     </div>
 
     <div id="cmdBox"></div>
-  </section>
 
-  <!-- ── STATUS BAR ─────────────────────────────────────── -->
-  <footer class="status-bar">
-    <span class="status-led" aria-hidden="true"></span>
-    <span class="status" id="status">請先上傳影片</span>
+    <!-- progress + completion feedback, kept beside the action buttons -->
     <div class="prog-wrap" id="progWrap">
       <progress id="prog" max="100" value="0"></progress>
       <div class="prog-label" id="progLabel"></div>
     </div>
-  </footer>
+    <div class="feedback" id="feedback" role="status" aria-live="polite">
+      <span class="feedback-icon" id="feedbackIcon" aria-hidden="true"></span>
+      <span class="feedback-text" id="feedbackText"></span>
+    </div>
+  </section>
+
+  </div><!-- /studio-controls -->
+  </div><!-- /studio -->
+
 
 </main>
 
-<video id="hiddenVideo" style="display:none" playsinline muted></video>
+<!-- kept rendered but offscreen (NOT display:none) so browsers keep decoding its
+     frames and fire requestVideoFrameCallback during live preview -->
+<video id="hiddenVideo" style="position:fixed;left:0;top:0;width:2px;height:2px;opacity:0;pointer-events:none;z-index:-1" playsinline muted></video>
 <canvas id="workCanvas" style="display:none"></canvas>
 
 <script src="vendor/jszip.min.js"></script>

@@ -1,26 +1,37 @@
 // ── App wiring: DOM, state, video pipeline, exporters ──────
-import { hexToRgb, applyKey } from './keying.js';
+import { hexToRgb, applyKey, analyzeResidue, toAlphaView, RESIDUE_COLOR } from './keying.js';
 import { encodeAnimatedWebP, estimateWebpBytes } from './webp-anim.js';
+import { extractFrames, estimateMemoryBytes } from './pipeline.js';
 
 // ── Constants ──────────────────────────────────────────────
 const FPS = 30;
-const PROGRESS_YIELD_EVERY = 10; // yield to UI thread every N frames
+// Output frame-rate presets the UI offers. Each is an integer divisor of FPS,
+// so skip = FPS / preset stays a clean integer (1, 2, 3, 5, 6).
+const FPS_PRESETS = [30, 15, 10, 6, 5];
+// Warn before processing if the keyed-frame buffer would exceed this much RAM
+// (every frame is kept in memory for preview + export). ~1.2 GB ≈ the point
+// where a long/HD clip starts risking an out-of-memory tab crash.
+const MEMORY_WARN_BYTES = 1.2e9;
 
 // ── DOM references ─────────────────────────────────────────
 const $ = id => document.getElementById(id);
 const el = {
   fileInput: $('fileInput'),
   dropZone: $('dropZone'),
+  dropPrompt: $('dropPrompt'),
   processBtn: $('processBtn'),
   downloadBtn: $('downloadBtn'),
   pngSeqBtn: $('pngSeqBtn'),
   downloadZipBtn: $('downloadZipBtn'),
   webpBtn: $('webpBtn'),
   downloadWebpBtn: $('downloadWebpBtn'),
-  status: $('status'),
   prog: $('prog'),
   progWrap: $('progWrap'),
   progLabel: $('progLabel'),
+  feedback: $('feedback'),
+  feedbackIcon: $('feedbackIcon'),
+  feedbackText: $('feedbackText'),
+  srcMeta: $('srcMeta'),
   video: $('hiddenVideo'),
   srcCanvas: $('srcCanvas'),
   outCanvas: $('outCanvas'),
@@ -37,11 +48,16 @@ const el = {
   spillRow: $('spillRow'),
   threshLabel: $('threshLabel'),
   seqScale: $('seqScale'),
-  seqSkip: $('seqSkip'),
+  seqWidthInput: $('seqWidthInput'),
+  seqFps: $('seqFps'),
   webpQ: $('webpQ'),
+  webpAlphaQ: $('webpAlphaQ'),
   cmdBox: $('cmdBox'),
   webpEstVal: $('webpEstVal'),
   webpEstNote: $('webpEstNote'),
+  alphaBadge: $('alphaBadge'),
+  residueVal: $('residueVal'),
+  residueToggle: $('residueToggle'),
 };
 const srcCtx = el.srcCanvas.getContext('2d', { willReadFrequently: true });
 const outCtx = el.outCanvas.getContext('2d');
@@ -61,6 +77,8 @@ let lastPlayTs = null;
 let busy = false;          // an export is running
 let estTimer = null;       // debounce handle for the size estimate
 let estToken = 0;          // guards against stale async estimate results
+let alphaView = false;     // ALPHA badge toggles the alpha-matte preview
+let highlightOn = false;   // 殘留 switch: persistently highlight residue pixels
 
 // ── Mode tabs ──────────────────────────────────────────────
 document.querySelectorAll('.tab').forEach(tab => {
@@ -77,7 +95,8 @@ document.querySelectorAll('.tab').forEach(tab => {
 });
 
 // ── Upload ─────────────────────────────────────────────────
-el.dropZone.addEventListener('click', () => el.fileInput.click());
+// click the prompt (not the whole stage) so picking color on a loaded frame still works
+el.dropPrompt.addEventListener('click', () => el.fileInput.click());
 el.dropZone.addEventListener('dragover', e => { e.preventDefault(); el.dropZone.classList.add('dragover'); });
 el.dropZone.addEventListener('dragleave', () => el.dropZone.classList.remove('dragover'));
 el.dropZone.addEventListener('drop', e => { e.preventDefault(); el.dropZone.classList.remove('dragover'); handleFile(e.dataTransfer.files[0]); });
@@ -86,7 +105,10 @@ el.fileInput.addEventListener('change', () => handleFile(el.fileInput.files[0]))
 function handleFile(file) {
   if (!file || !file.type.startsWith('video/')) return;
   stopPlayback();
+  stopLivePlayback();
   processedFrames = [];
+  hideFeedback();
+  el.progWrap.style.display = 'none';
   el.previewBar.style.display = 'none';
   outputBlob = zipBlob = webpBlob = null;
   el.downloadBtn.disabled = true;
@@ -102,8 +124,15 @@ function handleFile(file) {
   }, { once: true });
   el.video.addEventListener('seeked', () => {
     srcCtx.drawImage(el.video, 0, 0);
+    el.dropZone.classList.add('has-media');
+    configureWidthSlider(el.video.videoWidth);
     livePreview();
-    el.status.textContent = `已載入（${el.video.videoWidth}×${el.video.videoHeight}，時長 ${el.video.duration.toFixed(2)}s，${FPS}fps）`;
+    // show the transport so you can preview (live-keyed) right after loading
+    const n = videoFrameCount();
+    el.previewBar.style.display = 'flex';
+    el.scrubber.min = 0; el.scrubber.max = Math.max(1, n - 1); el.scrubber.step = 1; el.scrubber.value = 0;
+    el.frameLabel.textContent = `1 / ${n}`;
+    el.srcMeta.textContent = `${el.video.videoWidth}×${el.video.videoHeight} · ${el.video.duration.toFixed(2)}s · ${FPS}fps`;
     el.processBtn.disabled = false;
     el.pngSeqBtn.disabled = false;
     el.webpBtn.disabled = false;
@@ -146,6 +175,20 @@ el.colorPicker.addEventListener('input', livePreview);
   });
 });
 
+// ── Alpha-matte view toggle (ALPHA badge in the OUTPUT viewport) ──
+if (el.alphaBadge) {
+  const toggleAlpha = () => {
+    alphaView = !alphaView;
+    el.alphaBadge.classList.toggle('active', alphaView);
+    el.alphaBadge.setAttribute('aria-pressed', String(alphaView));
+    if (!isPlaying) livePreview();
+  };
+  el.alphaBadge.addEventListener('click', toggleAlpha);
+  el.alphaBadge.addEventListener('keydown', e => {
+    if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleAlpha(); }
+  });
+}
+
 // ── Params ─────────────────────────────────────────────────
 function getParams() {
   return {
@@ -158,24 +201,94 @@ function getParams() {
   };
 }
 function getSeqParams() {
+  const srcW = el.video.videoWidth;
+  // UI picks an output width in px; downstream still works in scale (= w / srcW)
+  const scale = srcW ? parseInt(el.seqScale.value) / srcW : 1;
   return {
-    scale: parseFloat(el.seqScale.value),
-    skip: parseInt(el.seqSkip.value),
+    scale,
+    skip: Math.round(FPS / FPS_PRESETS[parseInt(el.seqFps.value)]),
     quality: parseInt(el.webpQ.value),
+    alphaQuality: parseInt(el.webpAlphaQ.value),
   };
+}
+
+// Configure width controls against the loaded video: cap at source width (no upscaling)
+function configureWidthSlider(srcW) {
+  const minW = Math.min(64, srcW);
+  [el.seqScale, el.seqWidthInput].forEach(c => { c.min = minW; c.max = srcW; c.step = 2; });
+  el.seqScale.value = srcW;
+  el.seqWidthInput.value = srcW;   // default = original size (100%)
+  updateHeightHint();
+}
+// derive height from the current width + source aspect ratio
+function updateHeightHint() {
+  const srcW = el.video.videoWidth, srcH = el.video.videoHeight;
+  $('seqHeightVal').textContent = srcW
+    ? Math.round(srcH * parseInt(el.seqScale.value) / srcW)
+    : '—';
+}
+// slider moved → mirror into the number field
+function syncWidthFromSlider() {
+  el.seqWidthInput.value = el.seqScale.value;
+  updateHeightHint();
+  scheduleEstimate();
+}
+// typed width → clamp to [min, src], snap even, drive the slider.
+// writeBack=true (on blur/enter) rewrites the field with the clamped value.
+function syncWidthFromInput(writeBack) {
+  const srcW = el.video.videoWidth;
+  if (!srcW) return;
+  let w = parseInt(el.seqWidthInput.value);
+  if (isNaN(w)) { if (writeBack) { el.seqWidthInput.value = el.seqScale.value; } return; }
+  const minW = parseInt(el.seqScale.min), maxW = parseInt(el.seqScale.max);
+  w = Math.max(minW, Math.min(maxW, Math.round(w / 2) * 2));
+  el.seqScale.value = w;
+  if (writeBack) el.seqWidthInput.value = w;
+  updateHeightHint();
+  scheduleEstimate();
 }
 function livePreview() {
   if (!el.srcCanvas.width) return;
-  if (processedFrames.length > 0) { outCtx.putImageData(processedFrames[previewIdx], 0, 0); return; }
-  outCtx.putImageData(applyKey(srcCtx.getImageData(0, 0, el.srcCanvas.width, el.srcCanvas.height), getParams()), 0, 0);
+  if (processedFrames.length > 0) { paintOutput(processedFrames[previewIdx]); return; }
+  paintOutput(applyKey(srcCtx.getImageData(0, 0, el.srcCanvas.width, el.srcCanvas.height), getParams()));
   scheduleEstimate(); // keying params changed the frame → re-estimate size
+}
+
+// Decorate a keyed frame for the OUTPUT viewport: measure background residue,
+// optionally highlight it (殘留 switch) or switch to the alpha matte view.
+// Always works on a copy so stored processedFrames are never mutated.
+function paintOutput(keyed) {
+  const display = new ImageData(new Uint8ClampedArray(keyed.data), keyed.width, keyed.height);
+  // analyzeResidue reads original RGB, so call it before toAlphaView destroys it.
+  const highlight = highlightOn && !alphaView;
+  const ratio = analyzeResidue(display, mode, highlight ? RESIDUE_COLOR : null);
+  if (alphaView) toAlphaView(display);
+  outCtx.putImageData(display, 0, 0);
+  updateResidueReadout(ratio);
+}
+
+function updateResidueReadout(ratio) {
+  if (!el.residueVal) return;
+  const pct = ratio * 100;
+  const clean = pct < 0.05;
+  el.residueVal.textContent = clean ? '0.0% 乾淨' : pct.toFixed(1) + '%';
+  el.residueVal.classList.toggle('clean', clean);
+  el.residueVal.classList.toggle('dirty', !clean);
+}
+
+// ── Residue highlight switch (OUTPUT viewport) ──
+if (el.residueToggle) {
+  el.residueToggle.addEventListener('change', () => {
+    highlightOn = el.residueToggle.checked;
+    if (!isPlaying) livePreview();
+  });
 }
 
 // ── Preview playback ───────────────────────────────────────
 function showFrame(idx) {
   idx = Math.max(0, Math.min(processedFrames.length - 1, idx));
   previewIdx = idx;
-  outCtx.putImageData(processedFrames[idx], 0, 0);
+  paintOutput(processedFrames[idx]);
   el.scrubber.value = idx;
   el.frameLabel.textContent = `${idx + 1} / ${processedFrames.length}`;
 }
@@ -200,37 +313,112 @@ function startPlayback() {
   }
   playRafId = requestAnimationFrame(tick);
 }
-el.playBtn.addEventListener('click', () => { if (!processedFrames.length) return; isPlaying ? stopPlayback() : startPlayback(); });
-el.scrubber.addEventListener('input', () => { stopPlayback(); showFrame(parseInt(el.scrubber.value)); });
+// ── Live preview · plays the source video and keys each frame on the fly ──
+// Used before an export run (processedFrames empty); after a run we switch to
+// the exact-frame playback above.
+let isLivePlaying = false;
+let liveRafId = null;
 
-// ── Frame extraction (shared by every exporter) ────────────
-async function seekTo(t) {
-  return new Promise(r => { el.video.addEventListener('seeked', r, { once: true }); el.video.currentTime = t; });
+function videoFrameCount() {
+  return Math.max(1, Math.round((el.video.duration || 0) * FPS));
+}
+// Draw the video's current frame into SOURCE, then key it into OUTPUT.
+function liveDrawCurrent() {
+  srcCtx.drawImage(el.video, 0, 0);
+  livePreview();                       // key current srcCanvas → outCanvas
+  const n = videoFrameCount();
+  const f = Math.min(n - 1, Math.round(el.video.currentTime * FPS));
+  el.scrubber.value = f;
+  el.frameLabel.textContent = `${f + 1} / ${n}`;
+}
+function stopLivePlayback() {
+  isLivePlaying = false;
+  if (liveRafId != null) { cancelAnimationFrame(liveRafId); liveRafId = null; }
+  if (!el.video.paused) el.video.pause();
+  el.playBtn.innerHTML = '&#9654;';
+}
+function startLivePlayback() {
+  if (!el.video.src) return;
+  if (el.video.ended || el.video.currentTime >= el.video.duration - 0.05) el.video.currentTime = 0;
+  isLivePlaying = true;
+  el.playBtn.innerHTML = '&#9646;&#9646;';
+  // Plain requestAnimationFrame loop — fires every frame regardless of whether
+  // the video is composited, so it works for an offscreen video. Each tick draws
+  // whatever frame the (decoding) video is currently on. The loop is NOT gated on
+  // the play() promise; if the browser pauses us (e.g. a seek race), we re-issue
+  // play() so playback self-heals instead of silently freezing.
+  const tick = () => {
+    if (!isLivePlaying) return;
+    liveDrawCurrent();
+    if (el.video.ended) { stopLivePlayback(); return; }
+    if (el.video.paused) el.video.play().catch(() => {});
+    liveRafId = requestAnimationFrame(tick);
+  };
+  el.video.play().catch(() => {});
+  liveRafId = requestAnimationFrame(tick);
+}
+function seekLive(frame) {
+  const t = Math.max(0, Math.min((el.video.duration || 0) - 0.001, frame / FPS));
+  el.video.addEventListener('seeked', liveDrawCurrent, { once: true });
+  el.video.currentTime = t;
 }
 
+// rVFC stops firing once the video ends, so reset the transport here
+el.video.addEventListener('ended', () => { if (isLivePlaying) stopLivePlayback(); });
+
+el.playBtn.addEventListener('click', () => {
+  if (processedFrames.length) {        // exact-frame playback (post-export)
+    isPlaying ? stopPlayback() : startPlayback();
+  } else {                             // live-keyed preview (pre-export)
+    isLivePlaying ? stopLivePlayback() : startLivePlayback();
+  }
+});
+el.scrubber.addEventListener('input', () => {
+  if (processedFrames.length) { stopPlayback(); showFrame(parseInt(el.scrubber.value)); }
+  else { stopLivePlayback(); seekLive(parseInt(el.scrubber.value)); }
+});
+
+// ── Frame extraction (shared by every exporter) ────────────
+// Plays the video and keys every frame in a Web Worker (see pipeline.js) — no
+// per-frame seeking, no main-thread keying. Throws '__cancelled__' if the user
+// declines the high-memory warning.
 async function runFrames() {
   const p = getParams();
   const w = el.video.videoWidth, h = el.video.videoHeight;
   const duration = el.video.duration, totalFrames = Math.ceil(duration * FPS);
 
-  processedFrames = [];
-  el.progWrap.style.display = 'block'; el.prog.value = 0;
-  el.status.textContent = '逐幀處理中...';
-
-  for (let f = 0; f < totalFrames; f++) {
-    const t = f / FPS;
-    if (t >= duration) break;
-    await seekTo(Math.min(t, duration - 0.001));
-    workCtx.drawImage(el.video, 0, 0);
-    const keyed = applyKey(workCtx.getImageData(0, 0, w, h), p);
-    processedFrames.push(keyed);
-    if (f % 5 === 0) outCtx.putImageData(keyed, 0, 0);
-    const pct = Math.round((f / totalFrames) * 60);
-    el.prog.value = pct;
-    el.progLabel.textContent = `逐幀處理 ${f + 1} / ${totalFrames}（${pct}%）`;
-    if (f % PROGRESS_YIELD_EVERY === 0) await new Promise(r => setTimeout(r, 0));
+  const estBytes = estimateMemoryBytes(w, h, duration, FPS);
+  if (estBytes > MEMORY_WARN_BYTES) {
+    const gb = (estBytes / 1e9).toFixed(1);
+    const ok = confirm(
+      `此影片約 ${totalFrames} 幀（${w}×${h}），去背後預估佔用 ~${gb}GB 記憶體，` +
+      `可能導致分頁崩潰。\n\n建議先調低「縮放」或縮短影片。仍要繼續嗎？`
+    );
+    if (!ok) throw new Error('__cancelled__');
   }
 
+  processedFrames = [];
+  el.progWrap.style.display = 'block'; el.prog.value = 0;
+  el.progLabel.textContent = '逐幀處理中（播放抓幀 + Worker 去背）…';
+
+  let lastPreview = 0;
+  processedFrames = await extractFrames({
+    video: el.video,
+    ctx: workCtx,
+    fps: FPS,
+    params: p,
+    onProgress: (done, total) => {
+      const pct = Math.round((done / total) * 60);
+      el.prog.value = pct;
+      el.progLabel.textContent = `去背 ${done} / ${total}（${pct}%）`;
+    },
+    onFrameReady: (img, idx) => {
+      // Throttled live preview so the user sees keying happen.
+      if (idx - lastPreview >= 5) { lastPreview = idx; paintOutput(img); }
+    },
+  });
+
+  el.prog.value = 60;
   el.previewBar.style.display = 'flex';
   el.scrubber.max = processedFrames.length - 1;
   showFrame(0);
@@ -242,9 +430,8 @@ async function runFrames() {
 async function runProcess() {
   await runFrames();
 
-  el.status.textContent = '第二步：錄製輸出中...';
   el.prog.value = 60;
-  el.progLabel.textContent = '以精確 30fps 泵入 MediaRecorder...';
+  el.progLabel.textContent = '第二步：以精確 30fps 泵入 MediaRecorder…';
   await new Promise(r => setTimeout(r, 30));
 
   const stream = el.workCanvas.captureStream(FPS);
@@ -272,8 +459,7 @@ async function runProcess() {
 
   outputBlob = new Blob(chunks, { type: 'video/webm' });
   el.prog.value = 100;
-  el.progLabel.textContent = `完成！${processedFrames.length} 幀 @ ${FPS}fps`;
-  el.status.textContent = `完成！${processedFrames.length} 幀 @ ${FPS}fps`;
+  showFeedback('success', `透明 WebM 完成 · ${processedFrames.length} 幀 @ ${FPS}fps`);
   el.downloadBtn.disabled = false;
 }
 
@@ -282,7 +468,7 @@ el.processBtn.addEventListener('click', async () => {
   setBusy(true);
   outputBlob = null;
   try { await runProcess(); }
-  catch (e) { el.status.textContent = '錯誤：' + e.message; console.error(e); }
+  catch (e) { reportError('錯誤：', e); }
   setBusy(false);
 });
 el.downloadBtn.addEventListener('click', () => { if (outputBlob) triggerDownload(outputBlob, 'removed-bg.webm'); });
@@ -296,11 +482,11 @@ el.webpBtn.addEventListener('click', async () => {
   el.cmdBox.style.display = 'none';
   try {
     if (!processedFrames.length) await runFrames();
-    const { scale, skip, quality } = getSeqParams();
+    const { scale, skip, quality, alphaQuality } = getSeqParams();
     el.progWrap.style.display = 'block';
-    el.status.textContent = '合成動態 WebP 中（libwebp WASM）...';
+    el.progLabel.textContent = '合成動態 WebP 中（libwebp WASM）…';
     webpBlob = await encodeAnimatedWebP(processedFrames, {
-      fps: FPS, quality, scale, skip,
+      fps: FPS, quality, scale, skip, alphaQuality,
       onProgress: (done, total) => {
         el.prog.value = 60 + Math.round((done / total) * 40);
         el.progLabel.textContent = `編碼 WebP 影格 ${done} / ${total}`;
@@ -309,12 +495,11 @@ el.webpBtn.addEventListener('click', async () => {
     el.prog.value = 100;
     const sizeMB = (webpBlob.size / 1024 / 1024).toFixed(2);
     const frameCount = Math.ceil(processedFrames.length / skip);
-    el.progLabel.textContent = `完成！${frameCount} 幀動態 WebP，${sizeMB}MB`;
-    el.status.textContent = `動態 WebP 完成！${sizeMB}MB（已自動下載）`;
+    showFeedback('success', `動態 WebP 完成 · ${frameCount} 幀 · ${sizeMB}MB · 已自動下載`);
     el.downloadWebpBtn.disabled = false;
     triggerDownload(webpBlob, 'anim.webp'); // fully automatic download
   } catch (e) {
-    el.status.textContent = '動態 WebP 錯誤：' + e.message; console.error(e);
+    reportError('動態 WebP 錯誤：', e);
   }
   setBusy(false);
 });
@@ -333,7 +518,7 @@ async function exportPngSequence(frames) {
 
   el.progWrap.style.display = 'block';
   el.prog.value = 0;
-  el.status.textContent = 'PNG 序列匯出中...';
+  el.progLabel.textContent = 'PNG 序列匯出中…';
   el.cmdBox.style.display = 'none';
 
   const zip = new JSZip();
@@ -370,8 +555,8 @@ async function exportPngSequence(frames) {
   );
 
   el.prog.value = 100;
-  el.progLabel.textContent = `完成！${indices.length} 張 PNG，${gW}×${gH}，${(zipBlob.size / 1024 / 1024).toFixed(1)}MB`;
-  el.status.textContent = `PNG 序列完成！${(zipBlob.size / 1024 / 1024).toFixed(1)}MB`;
+  const zipMB = (zipBlob.size / 1024 / 1024).toFixed(1);
+  showFeedback('success', `PNG 序列完成 · ${indices.length} 張 · ${gW}×${gH} · ${zipMB}MB`);
   el.downloadZipBtn.disabled = false;
 
   el.cmdBox.textContent = '$ ' + buildImg2webpCmd(skip, quality);
@@ -385,17 +570,42 @@ el.pngSeqBtn.addEventListener('click', async () => {
   try {
     if (!processedFrames.length) await runFrames();
     await exportPngSequence(processedFrames);
-  } catch (e) { el.status.textContent = 'PNG 序列錯誤：' + e.message; console.error(e); }
+  } catch (e) { reportError('PNG 序列錯誤：', e); }
   setBusy(false);
 });
 el.downloadZipBtn.addEventListener('click', () => { if (zipBlob) triggerDownload(zipBlob, 'frames.zip'); });
 
 // ── Sequence option labels ─────────────────────────────────
-el.seqScale.addEventListener('input', e => { $('seqScaleVal').textContent = Math.round(e.target.value * 100) + '%'; scheduleEstimate(); });
-el.seqSkip.addEventListener('input', e => { $('seqSkipVal').textContent = e.target.value + '幀'; scheduleEstimate(); });
+el.seqScale.addEventListener('input', syncWidthFromSlider);
+el.seqWidthInput.addEventListener('input', () => syncWidthFromInput(false));
+el.seqWidthInput.addEventListener('change', () => syncWidthFromInput(true));
+el.seqFps.addEventListener('input', e => { $('seqFpsVal').textContent = FPS_PRESETS[parseInt(e.target.value)] + 'fps'; scheduleEstimate(); });
 el.webpQ.addEventListener('input', e => { $('webpQVal').textContent = e.target.value; scheduleEstimate(); });
+el.webpAlphaQ.addEventListener('input', e => { $('webpAlphaQVal').textContent = e.target.value; scheduleEstimate(); });
 
 // ── Shared helpers ─────────────────────────────────────────
+// The single feedback zone (replaces the old footer). `state` drives hue + glyph:
+// 'success' (green ✓) · 'error' (red ✕) · 'info' (neutral). Showing it also
+// collapses the progress bar, so the panel only ever has one active readout.
+const FEEDBACK_GLYPH = { success: '✓', error: '✕', info: 'i' };
+function showFeedback(state, text) {
+  el.progWrap.style.display = 'none';
+  el.feedback.className = 'feedback show is-' + state;
+  el.feedbackIcon.textContent = FEEDBACK_GLYPH[state] || 'i';
+  el.feedbackText.textContent = text;
+}
+// Reset feedback before a new run.
+function hideFeedback() {
+  el.feedback.classList.remove('show');
+}
+
+// Surface an export failure, but treat the high-memory cancel as a calm "已取消".
+function reportError(prefix, e) {
+  if (e && e.message === '__cancelled__') { showFeedback('info', '已取消'); return; }
+  showFeedback('error', prefix + e.message);
+  console.error(e);
+}
+
 function triggerDownload(blob, filename) {
   const a = document.createElement('a');
   a.href = URL.createObjectURL(blob);
@@ -406,6 +616,7 @@ function triggerDownload(blob, filename) {
 // Disable every action button while one export is running.
 function setBusy(running) {
   busy = running;
+  if (running) hideFeedback(); // drop any prior feedback when a new run starts
   el.processBtn.disabled = running;
   el.pngSeqBtn.disabled = running;
   el.webpBtn.disabled = running;
@@ -437,7 +648,7 @@ async function updateEstimate() {
   if (busy) return;                       // don't compete with a running export
   if (!el.srcCanvas.width) { el.webpEstVal.textContent = '—'; return; }
   const token = ++estToken;               // newest request wins
-  const { scale, skip, quality } = getSeqParams();
+  const { scale, skip, quality, alphaQuality } = getSeqParams();
 
   // Pick representative frames + how many frames the real export will have.
   let sampleFrames, outputFrameCount;
@@ -456,7 +667,7 @@ async function updateEstimate() {
   el.webpEstVal.classList.add('is-stale');
   el.webpEstNote.textContent = '估算中…';
   try {
-    const { bytes, frameCount } = await estimateWebpBytes(sampleFrames, { quality, scale }, outputFrameCount);
+    const { bytes, frameCount } = await estimateWebpBytes(sampleFrames, { quality, scale, alphaQuality }, outputFrameCount);
     if (token !== estToken) return;       // superseded by a newer request
     el.webpEstVal.textContent = '≈ ' + formatSize(bytes);
     el.webpEstVal.classList.remove('is-stale');

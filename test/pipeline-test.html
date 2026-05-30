@@ -1,0 +1,166 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<title>keying + pipeline 自我測試</title>
+<style>
+  body { font: 14px/1.5 ui-monospace, monospace; padding: 16px; background:#111; color:#ddd; }
+  .pass { color:#4ade80; } .fail { color:#f87171; font-weight:bold; }
+  h2 { color:#93c5fd; margin: 18px 0 6px; }
+  #done { font-size: 16px; margin-top: 16px; }
+</style>
+</head>
+<body>
+<h1>keying.js + pipeline.js 自我測試</h1>
+<div id="log"></div>
+<div id="done">RUNNING…</div>
+
+<video id="v" style="display:none" muted playsinline></video>
+<canvas id="work" style="display:none"></canvas>
+
+<script type="module">
+import { applyKey, erodeAlpha, hexToRgb } from '../js/keying.js';
+import { extractFrames, estimateMemoryBytes } from '../js/pipeline.js';
+
+const logEl = document.getElementById('log');
+let failures = 0;
+function ok(cond, msg) {
+  const div = document.createElement('div');
+  div.className = cond ? 'pass' : 'fail';
+  div.textContent = (cond ? '✓ ' : '✗ FAIL: ') + msg;
+  logEl.appendChild(div);
+  if (!cond) failures++;
+}
+function section(t) { const h = document.createElement('h2'); h.textContent = t; logEl.appendChild(h); }
+
+// Build an ImageData from a list of [r,g,b] rows×cols.
+function makeImage(w, h, fill) {
+  const d = new Uint8ClampedArray(w * h * 4);
+  for (let i = 0; i < w * h; i++) {
+    const [r, g, b] = fill(i % w, (i / w) | 0);
+    d[i*4] = r; d[i*4+1] = g; d[i*4+2] = b; d[i*4+3] = 255;
+  }
+  return new ImageData(d, w, h);
+}
+const A = (img, x, y) => img.data[(y * img.width + x) * 4 + 3]; // alpha at (x,y)
+
+const CHROMA = { mode:'chroma', keyColor: hexToRgb('#00ff00'), thresh:0.18, feather:0.12, shrink:0, spill:0.15, boost:1.0 };
+const LUMA   = { mode:'luma', keyColor:[0,0,0], thresh:0.18, feather:0.12, shrink:0, spill:0, boost:1.0 };
+
+try {
+  // ── 1. Chroma keying (YCbCr distance) ──
+  section('1. 色度鍵（YCbCr 距離）');
+  {
+    // left half pure green (background), right half red (subject)
+    const img = makeImage(8, 4, (x) => x < 4 ? [0,255,0] : [255,0,0]);
+    const out = applyKey(img, CHROMA);
+    ok(A(out,0,0) === 0,   '純綠背景 → alpha 0（透明）');
+    ok(A(out,7,0) === 255, '紅色主體 → alpha 255（不透明）');
+  }
+
+  // ── 2. Luma keying ──
+  section('2. 亮度鍵');
+  {
+    const img = makeImage(8, 4, (x) => x < 4 ? [0,0,0] : [255,255,255]);
+    const out = applyKey(img, LUMA);
+    ok(A(out,0,0) === 0,   '純黑背景 → alpha 0');
+    ok(A(out,7,0) === 255, '純白主體 → alpha 255');
+  }
+
+  // ── 3. Separable erodeAlpha ──
+  section('3. erodeAlpha 可分離 min-filter');
+  {
+    const w = 7, h = 7, am = new Float32Array(w*h).fill(1);
+    am[3*w+3] = 0; // single hole at centre
+    const e1 = erodeAlpha(am, w, h, 1);
+    ok(e1[3*w+3] === 0, '中心洞保持 0');
+    ok(e1[2*w+3] === 0 && e1[3*w+2] === 0 && e1[4*w+3] === 0 && e1[3*w+4] === 0, '上下左右鄰居被侵蝕為 0');
+    ok(e1[1*w+3] === 1, 'r=1 不影響 2 格外的像素');
+    const e2 = erodeAlpha(am, w, h, 2);
+    ok(e2[1*w+3] === 0, 'r=2 侵蝕到 2 格外');
+    ok(erodeAlpha(am, w, h, 0) === am, 'r=0 直接回傳原陣列（不複製）');
+    // edge clamp: an all-1 matte must stay all-1 (old code zeroed the border)
+    const solid = new Float32Array(w*h).fill(1);
+    const es = erodeAlpha(solid, w, h, 2);
+    ok(es.every(v => v === 1), '全 1 matte 邊緣不被侵蝕（clamp，非歸零）');
+  }
+
+  // ── 4. estimateMemoryBytes ──
+  section('4. 記憶體估算');
+  ok(estimateMemoryBytes(1920,1080,10,30) === 1920*1080*4*300, '1080p/10s/30fps = w·h·4·300 bytes');
+
+  // ── 5. End-to-end pipeline via a synthetic video ──
+  section('5. pipeline 端到端（合成影片 + rVFC）');
+  {
+    const blob = await makeSyntheticVideo();
+    const v = document.getElementById('v');
+    v.src = URL.createObjectURL(blob);
+    await new Promise((res, rej) => {
+      v.addEventListener('loadedmetadata', res, { once: true });
+      v.addEventListener('error', () => rej(new Error('video load error')), { once: true });
+    });
+    await fixDuration(v); // MediaRecorder webm often reports duration=Infinity until seeked
+
+    ok(isFinite(v.duration) && v.duration > 0, `影片時長有效（${v.duration.toFixed(2)}s）`);
+    const work = document.getElementById('work');
+    work.width = v.videoWidth; work.height = v.videoHeight;
+    const wctx = work.getContext('2d', { willReadFrequently: true });
+
+    let progressSeen = 0;
+    const frames = await extractFrames({
+      video: v, ctx: wctx, fps: 30, params: CHROMA,
+      onProgress: (d) => { progressSeen = d; },
+    });
+
+    ok(frames.length > 0, `回傳 ${frames.length} 幀`);
+    ok(frames.every(f => f instanceof ImageData), '每一幀都是 ImageData');
+    ok(frames.every(f => f.width === v.videoWidth && f.height === v.videoHeight), '尺寸正確');
+    ok(progressSeen > 0, 'onProgress 有回報');
+    // green bg should be keyed out, red square (centre) kept
+    const mid = frames[Math.floor(frames.length/2)];
+    ok(A(mid, 1, 1) === 0, '角落（綠幕）→ 透明');
+    ok(A(mid, mid.width>>1, mid.height>>1) === 255, '中心（紅色主體）→ 不透明');
+  }
+} catch (e) {
+  ok(false, 'EXCEPTION: ' + (e && e.stack || e));
+}
+
+document.getElementById('done').textContent =
+  failures === 0 ? `ALL PASS (${logEl.querySelectorAll('.pass').length} checks)` : `FAILED: ${failures} check(s)`;
+document.getElementById('done').className = failures === 0 ? 'pass' : 'fail';
+
+// ── helpers ──
+function makeSyntheticVideo() {
+  return new Promise((resolve, reject) => {
+    const c = document.createElement('canvas');
+    c.width = 64; c.height = 48;
+    const ctx = c.getContext('2d');
+    const stream = c.captureStream(30);
+    const mime = MediaRecorder.isTypeSupported('video/webm;codecs=vp8') ? 'video/webm;codecs=vp8' : 'video/webm';
+    const rec = new MediaRecorder(stream, { mimeType: mime });
+    const chunks = [];
+    rec.ondataavailable = e => { if (e.data.size) chunks.push(e.data); };
+    rec.onstop = () => resolve(new Blob(chunks, { type: 'video/webm' }));
+    rec.onerror = reject;
+    rec.start();
+    let n = 0;
+    (function frame() {
+      ctx.fillStyle = '#00ff00'; ctx.fillRect(0, 0, 64, 48);       // green screen
+      ctx.fillStyle = '#ff0000'; ctx.fillRect(20, 14, 24, 20);      // red subject (centre)
+      if (++n < 18) requestAnimationFrame(frame);
+      else setTimeout(() => rec.stop(), 80);
+    })();
+  });
+}
+// Force Chromium to compute a real duration for MediaRecorder webm.
+function fixDuration(v) {
+  return new Promise(res => {
+    if (isFinite(v.duration) && v.duration > 0) return res();
+    const onSeek = () => { v.removeEventListener('seeked', onSeek); v.currentTime = 0; res(); };
+    v.addEventListener('seeked', onSeek);
+    v.currentTime = 1e101;
+  });
+}
+</script>
+</body>
+</html>
