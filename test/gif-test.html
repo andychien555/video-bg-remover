@@ -1,0 +1,106 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>gif-anim encoder test</title>
+<style>
+  body { font-family: monospace; background: #111; color: #ddd; padding: 20px; }
+  .row { display: flex; gap: 24px; flex-wrap: wrap; margin: 16px 0; }
+  figure { margin: 0; }
+  img { image-rendering: pixelated; border: 1px solid #444;
+        background-image: linear-gradient(45deg, #333 25%, transparent 25%),
+                          linear-gradient(-45deg, #333 25%, transparent 25%),
+                          linear-gradient(45deg, transparent 75%, #333 75%),
+                          linear-gradient(-45deg, transparent 75%, #333 75%);
+        background-size: 16px 16px; background-position: 0 0, 0 8px, 8px -8px, -8px 0; }
+  figcaption { font-size: 12px; margin-top: 6px; }
+  .pass { color: #5f5; } .fail { color: #f55; }
+  #log { white-space: pre-wrap; font-size: 12px; line-height: 1.6; }
+</style>
+</head>
+<body>
+<h1>gif-anim.js encoder self-test</h1>
+<p>Builds synthetic frames (full-colour gradient → forces LZW code-size growth, plus an
+   alpha gradient → exercises 1-bit transparency), encodes them, and renders the GIFs.
+   Each GIF that decodes and renders natively proves the LZW + GIF89a container are valid.</p>
+<div class="row" id="out"></div>
+<div id="log"></div>
+
+<script type="module">
+import { encodeAnimatedGif, estimateGifBytes } from '../js/gif-anim.js';
+
+const W = 220, H = 140;
+const logEl = document.getElementById('log');
+const log = (msg, cls) => { logEl.innerHTML += (cls ? `<span class="${cls}">${msg}</span>` : msg) + '\n'; };
+
+// Build a frame: an HSL-ish full-colour gradient (thousands of unique colours,
+// which pushes the LZW dictionary past 256/512/1024 entries) with a soft
+// circular alpha falloff so transparency + feathered edges are exercised.
+function makeFrame(phase) {
+  const data = new Uint8ClampedArray(W * H * 4);
+  const cx = W * (0.4 + 0.2 * phase), cy = H * 0.5, rad = 46, soft = 16;
+  for (let y = 0; y < H; y++) {
+    for (let x = 0; x < W; x++) {
+      const i = (y * W + x) * 4;
+      data[i]     = (x * 255 / W) | 0;
+      data[i + 1] = (y * 255 / H) | 0;
+      data[i + 2] = ((x + y + phase * 80) * 255 / (W + H)) & 0xff;
+      const d = Math.hypot(x - cx, y - cy);
+      // opaque inside the circle, soft feather over `soft` px, transparent outside
+      const a = d <= rad ? 1 : d >= rad + soft ? 0 : 1 - (d - rad) / soft;
+      data[i + 3] = Math.round(a * 255);
+    }
+  }
+  return new ImageData(data, W, H);
+}
+
+const frames = [makeFrame(0), makeFrame(0.5), makeFrame(1)];
+
+function show(blob, caption) {
+  const url = URL.createObjectURL(blob);
+  const fig = document.createElement('figure');
+  const img = new Image();
+  fig.appendChild(img);
+  const cap = document.createElement('figcaption');
+  cap.textContent = caption + ` · ${(blob.size / 1024).toFixed(1)} KB`;
+  fig.appendChild(cap);
+  document.getElementById('out').appendChild(fig);
+  return new Promise(resolve => {
+    img.onload = () => { log(`✓ rendered: ${caption} (${img.naturalWidth}×${img.naturalHeight}, ${(blob.size/1024).toFixed(1)} KB)`, 'pass'); resolve(true); };
+    img.onerror = () => { log(`✗ FAILED to decode: ${caption}`, 'fail'); resolve(false); };
+    img.src = url;
+  });
+}
+
+(async () => {
+  try {
+    let allPass = true;
+
+    const est = await estimateGifBytes(frames, { transparent: true, dither: true }, 3);
+    log(`estimate (transparent+dither, 3 frames): ≈ ${(est.bytes/1024).toFixed(1)} KB, perFrame ${est.perFrame} B`);
+
+    const g1 = await encodeAnimatedGif(frames, { fps: 10, transparent: true, dither: true });
+    allPass &= await show(g1, 'transparent + dither');
+
+    const g2 = await encodeAnimatedGif(frames, { fps: 10, transparent: true, dither: false });
+    allPass &= await show(g2, 'transparent, no dither');
+
+    const g3 = await encodeAnimatedGif(frames, { fps: 10, transparent: false, matte: [255, 255, 255], dither: true });
+    allPass &= await show(g3, 'matte #fff + dither');
+
+    const g4 = await encodeAnimatedGif(frames, { fps: 10, transparent: false, matte: [0, 128, 255], dither: false });
+    allPass &= await show(g4, 'matte #0080ff, no dither');
+
+    const g5 = await encodeAnimatedGif(frames, { fps: 6, transparent: true, dither: true, scale: 0.5 });
+    allPass &= await show(g5, 'transparent + dither, scale 0.5');
+
+    log('\n' + (allPass ? 'ALL PASS ✓' : 'SOME FAILED ✗'), allPass ? 'pass' : 'fail');
+    document.title = allPass ? 'GIF TEST: PASS' : 'GIF TEST: FAIL';
+  } catch (e) {
+    log('✗ EXCEPTION: ' + e.message + '\n' + e.stack, 'fail');
+    document.title = 'GIF TEST: ERROR';
+  }
+})();
+</script>
+</body>
+</html>

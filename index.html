@@ -16,28 +16,23 @@
     <span class="brand-mark" aria-hidden="true"></span>
     <span class="brand-name">bgremove</span>
   </div>
-  <div class="app-meta">
-    <span class="meta-pill">BROWSER-SIDE</span>
-    <span class="meta-dim">NO&nbsp;UPLOAD · NO&nbsp;WATERMARK</span>
-  </div>
 </header>
 
 <main class="shell">
 
   <section class="hero">
-    <div class="hero-kicker">VIDEO&nbsp;MATTING&nbsp;TOOL — EST.&nbsp;2026</div>
-    <h1>影片去背，逐幀精確。</h1>
-    <p class="subtitle">
-      上傳影片 → 逐幀去背 → 一鍵輸出透明背景的動態 WebP（libwebp WASM，alpha 可靠）。
-      也可匯出透明 WebM 或 PNG 序列。全程在瀏覽器內運算。
-    </p>
-    <div class="hero-spec">
-      <span><b>30</b> FPS</span>
-      <span class="dot"></span>
-      <span>逐幀合成</span>
-      <span class="dot"></span>
-      <span>透明 alpha</span>
+    <div class="hero-copy">
+      <h1>影片去背，逐幀精確。</h1>
+      <p class="subtitle">
+        上傳影片 → 逐幀去背 → 一鍵輸出透明背景的動態 WebP（libwebp WASM，alpha 可靠）。
+        也可匯出動態 GIF、透明 WebM 或 PNG 序列。
+      </p>
     </div>
+    <ul class="hero-points">
+      <li><span class="check" aria-hidden="true">✓</span> 全程在瀏覽器內運算</li>
+      <li><span class="check" aria-hidden="true">✓</span> 檔案不上傳、不外流</li>
+      <li><span class="check" aria-hidden="true">✓</span> 輸出無浮水印</li>
+    </ul>
   </section>
 
   <!-- ── STUDIO · preview (left) + controls (right) ─────── -->
@@ -96,10 +91,9 @@
   <!-- right column: tuning + export controls -->
   <div class="studio-controls">
 
-  <!-- ── STEP 02 · KEYING ───────────────────────────────── -->
-  <section class="panel" aria-labelledby="lbl-key">
+  <!-- ── STEP 02 · KEYING + EXPORT (single panel) ─────────── -->
+  <section class="panel" aria-labelledby="lbl-key lbl-export">
     <div class="panel-head">
-      <span class="step">02</span>
       <span class="panel-label" id="lbl-key">KEYING</span>
       <span class="panel-hint">去背參數</span>
     </div>
@@ -148,15 +142,30 @@
         <div class="tip">提亮主體邊緣過渡色</div>
       </div>
     </div>
-  </section>
-
-  <!-- ── STEP 03 · EXPORT ───────────────────────────────── -->
-  <section class="panel" aria-labelledby="lbl-export">
-    <div class="panel-head">
-      <span class="step">03</span>
+    <!-- ── EXPORT · same panel, divider header ──────────────── -->
+    <div class="panel-head panel-head--sub">
       <span class="panel-label" id="lbl-export">EXPORT</span>
       <span class="panel-hint">輸出設定</span>
     </div>
+
+    <!-- format picker: 3 settings groups (WebP+PNG share params, GIF & WebM stand alone) -->
+    <div class="export-tabs" role="tablist" aria-label="輸出格式">
+      <button class="etab active" data-fmt="image" role="tab" aria-selected="true" type="button">
+        <span class="etab-name">WebP / PNG</span>
+        <span class="etab-size" id="tabSizeImage">—</span>
+      </button>
+      <button class="etab" data-fmt="gif" role="tab" aria-selected="false" type="button">
+        <span class="etab-name">GIF</span>
+        <span class="etab-size" id="tabSizeGif">—</span>
+      </button>
+      <button class="etab" data-fmt="webm" role="tab" aria-selected="false" type="button">
+        <span class="etab-name">WebM</span>
+        <span class="etab-size" id="tabSizeWebm">—</span>
+      </button>
+    </div>
+
+    <!-- ── TAB: WebP / PNG (shared output settings) ─────────── -->
+    <div class="fmt-panel" data-fmt="image" role="tabpanel">
 
     <!-- shared output settings: WebP and PNG sequence -->
     <div class="seq-opts" id="webpOpts">
@@ -164,7 +173,7 @@
         <span class="seq-head">
           <span class="seq-name">輸出寬度</span>
           <span class="info" tabindex="0" role="img" aria-label="輸出寬度說明"
-                data-tip="輸出影像的寬度（像素）。高度會依原始比例自動換算；上限為原始尺寸，不會放大。寬度越小、檔案越小。">i</span>
+                data-tip="輸出影像的寬度（像素）。高度會依原始比例自動換算；上限為原始尺寸，不會放大。寬度越小、檔案越小。套用於 WebP 與 PNG。">i</span>
         </span>
         <span class="seq-val">
           <input type="number" id="seqWidthInput" class="num-input" min="64" max="1920" step="2" aria-label="輸出寬度（像素）">
@@ -176,7 +185,7 @@
         <span class="seq-head">
           <span class="seq-name">輸出幀率</span>
           <span class="info" tabindex="0" role="img" aria-label="輸出幀率說明"
-                data-tip="每秒輸出幾幀。數值越低、動態越省檔案但較不流暢，30fps 為原始流暢度。底層以 30fps 抽樣，故提供 30 / 15 / 10 / 6 / 5 這幾個整數倍率。">i</span>
+                data-tip="每秒輸出幾幀。數值越低、動態越省檔案但較不流暢，30fps 為原始流暢度。底層以 30fps 抽樣，故提供 30 / 15 / 10 / 6 / 5 這幾個整數倍率。套用於 WebP 與 PNG。">i</span>
         </span>
         <span class="seq-val" id="seqFpsVal">30fps</span>
         <input type="range" id="seqFps" min="0" max="4" step="1" value="0">
@@ -185,7 +194,7 @@
         <span class="seq-head">
           <span class="seq-name">WebP 品質</span>
           <span class="info" tabindex="0" role="img" aria-label="WebP 品質說明"
-                data-tip="彩色畫面的壓縮品質（0–100）。數值越高越清晰，檔案也越大。一般 75–85 已足夠。">i</span>
+                data-tip="彩色畫面的壓縮品質（0–100）。數值越高越清晰，檔案也越大。一般 75–85 已足夠。僅影響 WebP（PNG 為無損）。">i</span>
         </span>
         <span class="seq-val" id="webpQVal">80</span>
         <input type="range" id="webpQ" min="0" max="100" step="5" value="80">
@@ -194,57 +203,151 @@
         <span class="seq-head">
           <span class="seq-name">透明邊緣品質</span>
           <span class="info" tabindex="0" role="img" aria-label="透明邊緣品質說明"
-                data-tip="透明度（alpha）通道的壓縮品質（0–100）。越高，去背邊緣越乾淨銳利、半透明鋸齒越少。">i</span>
+                data-tip="透明度（alpha）通道的壓縮品質（0–100）。越高，去背邊緣越乾淨銳利、半透明鋸齒越少。僅影響 WebP。">i</span>
         </span>
         <span class="seq-val" id="webpAlphaQVal">90</span>
         <input type="range" id="webpAlphaQ" min="0" max="100" step="5" value="90">
       </div>
     </div>
 
-    <!-- live size estimate for the animated WebP -->
-    <div class="est-bar" id="webpEst" aria-live="polite">
-      <span class="est-label">EST. WEBP SIZE</span>
-      <span class="est-value" id="webpEstVal">—</span>
-      <span class="est-note" id="webpEstNote">上傳影片後即時估算</span>
-    </div>
-
-    <!-- headline action: animated WebP -->
-    <div class="export-row export-row--primary">
-      <div class="export-copy">
-        <div class="export-title">動態 WebP <span class="export-tag">PRIMARY</span></div>
+    <!-- animated WebP: title → estimate → actions, as one output block -->
+    <div class="output-group">
+      <div class="output-copy">
+        <div class="export-title">動態 WebP</div>
         <div class="export-desc">透明背景，一鍵自動下載</div>
       </div>
+      <div class="est-bar" id="webpEst" aria-live="polite">
+        <span class="est-label">EST. WEBP SIZE</span>
+        <span class="est-value" id="webpEstVal">—</span>
+        <span class="est-note" id="webpEstNote">上傳影片後即時估算</span>
+      </div>
       <div class="controls">
-        <button class="btn-solid" id="webpBtn" disabled>轉成動態 WebP</button>
+        <button class="btn-brand" id="webpBtn" disabled>轉成動態 WebP</button>
         <button class="btn-outline" id="downloadWebpBtn" disabled>下載 anim.webp</button>
       </div>
     </div>
 
-    <!-- secondary: transparent WebM -->
-    <div class="export-row">
-      <div class="export-copy">
-        <div class="export-title">透明 WebM</div>
-        <div class="export-desc">影片用，保留 alpha 通道</div>
-      </div>
-      <div class="controls">
-        <button class="btn-ghost" id="processBtn" disabled>處理並匯出 .webm</button>
-        <button class="btn-outline" id="downloadBtn" disabled>下載 removed-bg.webm</button>
-      </div>
-    </div>
-
-    <!-- secondary: PNG sequence -->
-    <div class="export-row">
-      <div class="export-copy">
+    <!-- PNG sequence: title → estimate → actions, as one output block -->
+    <div class="output-group">
+      <div class="output-copy">
         <div class="export-title">PNG 序列</div>
         <div class="export-desc">離線用 img2webp 合成</div>
       </div>
+      <div class="est-bar" id="pngEst" aria-live="polite">
+        <span class="est-label">EST. PNG/ZIP SIZE</span>
+        <span class="est-value" id="pngEstVal">—</span>
+        <span class="est-note" id="pngEstNote">上傳影片後即時估算</span>
+      </div>
       <div class="controls">
-        <button class="btn-ghost" id="pngSeqBtn" disabled>匯出 PNG 序列 (ZIP)</button>
+        <button class="btn-brand" id="pngSeqBtn" disabled>匯出 PNG 序列 (ZIP)</button>
         <button class="btn-outline" id="downloadZipBtn" disabled>下載 frames.zip</button>
       </div>
     </div>
 
     <div id="cmdBox"></div>
+
+    </div><!-- /tab image -->
+
+    <!-- ── TAB: GIF (independent settings; GIF can't do partial alpha) ─── -->
+    <div class="fmt-panel" data-fmt="gif" role="tabpanel" hidden>
+
+    <div class="seq-opts" id="gifOpts">
+      <div class="seq-row">
+        <span class="seq-head">
+          <span class="seq-name">GIF 寬度</span>
+          <span class="info" tabindex="0" role="img" aria-label="GIF 寬度說明"
+                data-tip="GIF 輸出寬度（像素）。高度依原始比例自動換算；上限為原始尺寸。GIF 檔案通常較大，建議調小一點。">i</span>
+        </span>
+        <span class="seq-val">
+          <input type="number" id="gifWidthInput" class="num-input" min="64" max="1920" step="2" aria-label="GIF 輸出寬度（像素）">
+          <span class="seq-unit">× <span id="gifHeightVal">—</span> px</span>
+        </span>
+        <input type="range" id="gifScale" min="64" max="1920" step="2" value="1920">
+      </div>
+      <div class="seq-row">
+        <span class="seq-head">
+          <span class="seq-name">GIF 幀率</span>
+          <span class="info" tabindex="0" role="img" aria-label="GIF 幀率說明"
+                data-tip="每秒輸出幾幀。GIF 以 1/100 秒為單位計時，幀率越低檔案越小；10–15fps 是 GIF 常見選擇。">i</span>
+        </span>
+        <span class="seq-val" id="gifFpsVal">15fps</span>
+        <input type="range" id="gifFps" min="0" max="4" step="1" value="1">
+      </div>
+      <div class="seq-row seq-row--switch">
+        <span class="seq-head">
+          <span class="seq-name">背景處理</span>
+          <span class="info" tabindex="0" role="img" aria-label="GIF 背景處理說明"
+                data-tip="GIF 的透明只有「全透明 / 全不透明」兩種，沒有半透明。開啟＝保留透明（羽化邊會變硬邊）；關閉＝把邊緣合成到下方的純色底，邊緣較平滑但不透明。">i</span>
+        </span>
+        <label class="vp-switch" title="開啟＝透明 GIF；關閉＝合成到純色底">
+          <input type="checkbox" id="gifTransparent" checked>
+          <span class="vp-switch-track"><span class="vp-switch-thumb"></span></span>
+          <span class="vp-switch-label" id="gifTransLabel">透明背景</span>
+        </label>
+      </div>
+      <div class="seq-row seq-row--switch" id="gifMatteRow" style="display:none">
+        <span class="seq-head">
+          <span class="seq-name">純色底色</span>
+          <span class="info" tabindex="0" role="img" aria-label="GIF 底色說明"
+                data-tip="關閉透明後，半透明邊緣會合成到這個顏色上。選一個接近實際使用場景的底色，邊緣最自然。">i</span>
+        </span>
+        <input type="color" id="gifMatteColor" value="#ffffff" aria-label="GIF 純色底色">
+      </div>
+      <div class="seq-row seq-row--switch">
+        <span class="seq-head">
+          <span class="seq-name">抖色 Dither</span>
+          <span class="info" tabindex="0" role="img" aria-label="GIF 抖色說明"
+                data-tip="GIF 最多 256 色。開啟 Floyd–Steinberg 抖色可讓漸層與柔邊看起來更細緻，代價是檔案略大、放大時有顆粒感。">i</span>
+        </span>
+        <label class="vp-switch" title="開啟 Floyd–Steinberg 抖色">
+          <input type="checkbox" id="gifDither" checked>
+          <span class="vp-switch-track"><span class="vp-switch-thumb"></span></span>
+          <span class="vp-switch-label">抖色</span>
+        </label>
+      </div>
+    </div>
+
+    <!-- animated GIF: title → estimate → actions, as one output block -->
+    <div class="output-group">
+      <div class="output-copy">
+        <div class="export-title">動態 GIF</div>
+        <div class="export-desc">相容最廣，256 色、無半透明</div>
+      </div>
+      <div class="est-bar" id="gifEst" aria-live="polite">
+        <span class="est-label">EST. GIF SIZE</span>
+        <span class="est-value" id="gifEstVal">—</span>
+        <span class="est-note" id="gifEstNote">上傳影片後即時估算</span>
+      </div>
+      <div class="controls">
+        <button class="btn-brand" id="gifBtn" disabled>轉成動態 GIF</button>
+        <button class="btn-outline" id="downloadGifBtn" disabled>下載 anim.gif</button>
+      </div>
+    </div><!-- /output-group -->
+
+    </div><!-- /tab gif -->
+
+    <!-- ── TAB: WebM (fixed spec · no settings) ──────────────── -->
+    <div class="fmt-panel" data-fmt="webm" role="tabpanel" hidden>
+      <div class="fmt-note">
+        透明 WebM 固定以 <b>原始尺寸 · 30fps · 10Mbps</b> 錄製，<b>不受上方設定影響</b>。
+        適合丟進剪輯軟體、保留 alpha 通道。
+      </div>
+      <div class="output-group">
+        <div class="output-copy">
+          <div class="export-title">透明 WebM</div>
+          <div class="export-desc">影片用，保留 alpha 通道</div>
+        </div>
+        <div class="est-bar" id="webmEst" aria-live="polite">
+          <span class="est-label">EST. WEBM SIZE</span>
+          <span class="est-value" id="webmEstVal">—</span>
+          <span class="est-note" id="webmEstNote">上傳影片後即時估算</span>
+        </div>
+        <div class="controls">
+          <button class="btn-brand" id="processBtn" disabled>處理並匯出 .webm</button>
+          <button class="btn-outline" id="downloadBtn" disabled>下載 removed-bg.webm</button>
+        </div>
+      </div>
+    </div><!-- /tab webm -->
 
     <!-- progress + completion feedback, kept beside the action buttons -->
     <div class="prog-wrap" id="progWrap">

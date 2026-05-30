@@ -1,6 +1,7 @@
 // ── App wiring: DOM, state, video pipeline, exporters ──────
 import { hexToRgb, applyKey, analyzeResidue, toAlphaView, RESIDUE_COLOR } from './keying.js';
 import { encodeAnimatedWebP, estimateWebpBytes } from './webp-anim.js';
+import { encodeAnimatedGif, estimateGifBytes } from './gif-anim.js';
 import { extractFrames, estimateMemoryBytes } from './pipeline.js';
 
 // ── Constants ──────────────────────────────────────────────
@@ -25,6 +26,8 @@ const el = {
   downloadZipBtn: $('downloadZipBtn'),
   webpBtn: $('webpBtn'),
   downloadWebpBtn: $('downloadWebpBtn'),
+  gifBtn: $('gifBtn'),
+  downloadGifBtn: $('downloadGifBtn'),
   prog: $('prog'),
   progWrap: $('progWrap'),
   progLabel: $('progLabel'),
@@ -55,6 +58,23 @@ const el = {
   cmdBox: $('cmdBox'),
   webpEstVal: $('webpEstVal'),
   webpEstNote: $('webpEstNote'),
+  gifScale: $('gifScale'),
+  gifWidthInput: $('gifWidthInput'),
+  gifFps: $('gifFps'),
+  gifTransparent: $('gifTransparent'),
+  gifMatteColor: $('gifMatteColor'),
+  gifMatteRow: $('gifMatteRow'),
+  gifTransLabel: $('gifTransLabel'),
+  gifDither: $('gifDither'),
+  gifEstVal: $('gifEstVal'),
+  gifEstNote: $('gifEstNote'),
+  pngEstVal: $('pngEstVal'),
+  pngEstNote: $('pngEstNote'),
+  webmEstVal: $('webmEstVal'),
+  webmEstNote: $('webmEstNote'),
+  tabSizeImage: $('tabSizeImage'),
+  tabSizeGif: $('tabSizeGif'),
+  tabSizeWebm: $('tabSizeWebm'),
   alphaBadge: $('alphaBadge'),
   residueVal: $('residueVal'),
   residueToggle: $('residueToggle'),
@@ -69,6 +89,7 @@ let isPicking = false;
 let outputBlob = null;   // webm
 let zipBlob = null;      // png sequence zip
 let webpBlob = null;     // animated webp
+let gifBlob = null;      // animated gif
 let processedFrames = [];
 let previewIdx = 0;
 let isPlaying = false;
@@ -77,6 +98,8 @@ let lastPlayTs = null;
 let busy = false;          // an export is running
 let estTimer = null;       // debounce handle for the size estimate
 let estToken = 0;          // guards against stale async estimate results
+let gifEstToken = 0;       // same staleness guard for the independent GIF estimate
+let pngEstToken = 0;       // …and for the PNG/ZIP estimate
 let alphaView = false;     // ALPHA badge toggles the alpha-matte preview
 let highlightOn = false;   // 殘留 switch: persistently highlight residue pixels
 
@@ -110,12 +133,20 @@ function handleFile(file) {
   hideFeedback();
   el.progWrap.style.display = 'none';
   el.previewBar.style.display = 'none';
-  outputBlob = zipBlob = webpBlob = null;
+  outputBlob = zipBlob = webpBlob = gifBlob = null;
   el.downloadBtn.disabled = true;
   el.downloadZipBtn.disabled = true;
   el.downloadWebpBtn.disabled = true;
+  el.downloadGifBtn.disabled = true;
   el.webpEstVal.textContent = '—';
   el.webpEstNote.textContent = '估算中…';
+  el.gifEstVal.textContent = '—';
+  el.gifEstNote.textContent = '估算中…';
+  el.pngEstVal.textContent = '—';
+  el.pngEstNote.textContent = '估算中…';
+  el.webmEstVal.textContent = '—';
+  el.webmEstNote.textContent = '估算中…';
+  el.tabSizeImage.textContent = el.tabSizeGif.textContent = el.tabSizeWebm.textContent = '—';
   el.video.src = URL.createObjectURL(file);
   el.video.addEventListener('loadedmetadata', () => {
     const w = el.video.videoWidth, h = el.video.videoHeight;
@@ -136,6 +167,7 @@ function handleFile(file) {
     el.processBtn.disabled = false;
     el.pngSeqBtn.disabled = false;
     el.webpBtn.disabled = false;
+    el.gifBtn.disabled = false;
   }, { once: true });
 }
 
@@ -211,13 +243,36 @@ function getSeqParams() {
     alphaQuality: parseInt(el.webpAlphaQ.value),
   };
 }
+// GIF has its own independent settings (width / fps / transparency / dither),
+// separate from the shared WebP + PNG block above.
+function getGifParams() {
+  const srcW = el.video.videoWidth;
+  const scale = srcW ? parseInt(el.gifScale.value) / srcW : 1;
+  const hex = el.gifMatteColor.value;
+  const matte = [
+    parseInt(hex.slice(1, 3), 16),
+    parseInt(hex.slice(3, 5), 16),
+    parseInt(hex.slice(5, 7), 16),
+  ];
+  return {
+    scale,
+    skip: Math.round(FPS / FPS_PRESETS[parseInt(el.gifFps.value)]),
+    transparent: el.gifTransparent.checked,
+    matte,
+    dither: el.gifDither.checked,
+  };
+}
 
 // Configure width controls against the loaded video: cap at source width (no upscaling)
 function configureWidthSlider(srcW) {
   const minW = Math.min(64, srcW);
-  [el.seqScale, el.seqWidthInput].forEach(c => { c.min = minW; c.max = srcW; c.step = 2; });
+  [el.seqScale, el.seqWidthInput, el.gifScale, el.gifWidthInput].forEach(c => { c.min = minW; c.max = srcW; c.step = 2; });
   el.seqScale.value = srcW;
   el.seqWidthInput.value = srcW;   // default = original size (100%)
+  // GIF defaults a bit smaller — GIF files are big, and full-res is rarely wanted.
+  const gifDefault = Math.max(minW, Math.min(srcW, Math.round(srcW / 2 / 2) * 2));
+  el.gifScale.value = gifDefault;
+  el.gifWidthInput.value = gifDefault;
   updateHeightHint();
 }
 // derive height from the current width + source aspect ratio
@@ -226,24 +281,27 @@ function updateHeightHint() {
   $('seqHeightVal').textContent = srcW
     ? Math.round(srcH * parseInt(el.seqScale.value) / srcW)
     : '—';
+  $('gifHeightVal').textContent = srcW
+    ? Math.round(srcH * parseInt(el.gifScale.value) / srcW)
+    : '—';
 }
-// slider moved → mirror into the number field
-function syncWidthFromSlider() {
-  el.seqWidthInput.value = el.seqScale.value;
+// slider moved → mirror into the number field (shared by WebP + GIF width rows)
+function syncWidthFromSlider(slider, input) {
+  input.value = slider.value;
   updateHeightHint();
   scheduleEstimate();
 }
 // typed width → clamp to [min, src], snap even, drive the slider.
 // writeBack=true (on blur/enter) rewrites the field with the clamped value.
-function syncWidthFromInput(writeBack) {
+function syncWidthFromInput(slider, input, writeBack) {
   const srcW = el.video.videoWidth;
   if (!srcW) return;
-  let w = parseInt(el.seqWidthInput.value);
-  if (isNaN(w)) { if (writeBack) { el.seqWidthInput.value = el.seqScale.value; } return; }
-  const minW = parseInt(el.seqScale.min), maxW = parseInt(el.seqScale.max);
+  let w = parseInt(input.value);
+  if (isNaN(w)) { if (writeBack) { input.value = slider.value; } return; }
+  const minW = parseInt(slider.min), maxW = parseInt(slider.max);
   w = Math.max(minW, Math.min(maxW, Math.round(w / 2) * 2));
-  el.seqScale.value = w;
-  if (writeBack) el.seqWidthInput.value = w;
+  slider.value = w;
+  if (writeBack) input.value = w;
   updateHeightHint();
   scheduleEstimate();
 }
@@ -493,9 +551,8 @@ el.webpBtn.addEventListener('click', async () => {
       },
     });
     el.prog.value = 100;
-    const sizeMB = (webpBlob.size / 1024 / 1024).toFixed(2);
     const frameCount = Math.ceil(processedFrames.length / skip);
-    showFeedback('success', `動態 WebP 完成 · ${frameCount} 幀 · ${sizeMB}MB · 已自動下載`);
+    showFeedback('success', `動態 WebP 完成 · ${frameCount} 幀 · ${formatSize(webpBlob.size)} · 已自動下載`);
     el.downloadWebpBtn.disabled = false;
     triggerDownload(webpBlob, 'anim.webp'); // fully automatic download
   } catch (e) {
@@ -504,6 +561,37 @@ el.webpBtn.addEventListener('click', async () => {
   setBusy(false);
 });
 el.downloadWebpBtn.addEventListener('click', () => { if (webpBlob) triggerDownload(webpBlob, 'anim.webp'); });
+
+// ── Export 2b: animated GIF (max compatibility, 256 colours, 1-bit alpha) ──
+el.gifBtn.addEventListener('click', async () => {
+  stopPlayback();
+  setBusy(true);
+  gifBlob = null;
+  el.downloadGifBtn.disabled = true;
+  try {
+    if (!processedFrames.length) await runFrames();
+    const { scale, skip, transparent, matte, dither } = getGifParams();
+    el.progWrap.style.display = 'block';
+    el.progLabel.textContent = '合成動態 GIF 中（256 色量化）…';
+    gifBlob = await encodeAnimatedGif(processedFrames, {
+      fps: FPS, scale, skip, transparent, matte, dither,
+      onProgress: (done, total) => {
+        el.prog.value = 60 + Math.round((done / total) * 40);
+        el.progLabel.textContent = `編碼 GIF 影格 ${done} / ${total}`;
+      },
+    });
+    el.prog.value = 100;
+    const frameCount = Math.ceil(processedFrames.length / skip);
+    const bg = transparent ? '透明' : '純色底';
+    showFeedback('success', `動態 GIF 完成 · ${frameCount} 幀 · ${bg} · ${formatSize(gifBlob.size)} · 已自動下載`);
+    el.downloadGifBtn.disabled = false;
+    triggerDownload(gifBlob, 'anim.gif'); // fully automatic download
+  } catch (e) {
+    reportError('動態 GIF 錯誤：', e);
+  }
+  setBusy(false);
+});
+el.downloadGifBtn.addEventListener('click', () => { if (gifBlob) triggerDownload(gifBlob, 'anim.gif'); });
 
 // ── Export 3: PNG sequence (ZIP) + reference img2webp command ──
 function buildImg2webpCmd(skip, quality) {
@@ -555,8 +643,7 @@ async function exportPngSequence(frames) {
   );
 
   el.prog.value = 100;
-  const zipMB = (zipBlob.size / 1024 / 1024).toFixed(1);
-  showFeedback('success', `PNG 序列完成 · ${indices.length} 張 · ${gW}×${gH} · ${zipMB}MB`);
+  showFeedback('success', `PNG 序列完成 · ${indices.length} 張 · ${gW}×${gH} · ${formatSize(zipBlob.size)}`);
   el.downloadZipBtn.disabled = false;
 
   el.cmdBox.textContent = '$ ' + buildImg2webpCmd(skip, quality);
@@ -575,13 +662,46 @@ el.pngSeqBtn.addEventListener('click', async () => {
 });
 el.downloadZipBtn.addEventListener('click', () => { if (zipBlob) triggerDownload(zipBlob, 'frames.zip'); });
 
-// ── Sequence option labels ─────────────────────────────────
-el.seqScale.addEventListener('input', syncWidthFromSlider);
-el.seqWidthInput.addEventListener('input', () => syncWidthFromInput(false));
-el.seqWidthInput.addEventListener('change', () => syncWidthFromInput(true));
+// ── Sequence option labels (shared WebP + PNG) ─────────────
+el.seqScale.addEventListener('input', () => syncWidthFromSlider(el.seqScale, el.seqWidthInput));
+el.seqWidthInput.addEventListener('input', () => syncWidthFromInput(el.seqScale, el.seqWidthInput, false));
+el.seqWidthInput.addEventListener('change', () => syncWidthFromInput(el.seqScale, el.seqWidthInput, true));
 el.seqFps.addEventListener('input', e => { $('seqFpsVal').textContent = FPS_PRESETS[parseInt(e.target.value)] + 'fps'; scheduleEstimate(); });
 el.webpQ.addEventListener('input', e => { $('webpQVal').textContent = e.target.value; scheduleEstimate(); });
 el.webpAlphaQ.addEventListener('input', e => { $('webpAlphaQVal').textContent = e.target.value; scheduleEstimate(); });
+
+// ── GIF option labels (independent settings) ───────────────
+el.gifScale.addEventListener('input', () => syncWidthFromSlider(el.gifScale, el.gifWidthInput));
+el.gifWidthInput.addEventListener('input', () => syncWidthFromInput(el.gifScale, el.gifWidthInput, false));
+el.gifWidthInput.addEventListener('change', () => syncWidthFromInput(el.gifScale, el.gifWidthInput, true));
+el.gifFps.addEventListener('input', e => { $('gifFpsVal').textContent = FPS_PRESETS[parseInt(e.target.value)] + 'fps'; scheduleEstimate(); });
+el.gifDither.addEventListener('change', scheduleEstimate);
+el.gifMatteColor.addEventListener('input', scheduleEstimate);
+el.gifTransparent.addEventListener('change', () => {
+  // Toggle the matte-colour row + relabel, then re-estimate (transparency
+  // changes both quality and size).
+  const transparent = el.gifTransparent.checked;
+  el.gifMatteRow.style.display = transparent ? 'none' : 'flex';
+  el.gifTransLabel.textContent = transparent ? '透明背景' : '純色底';
+  scheduleEstimate();
+});
+
+// ── Export format tabs (WebP/PNG · GIF · WebM) ─────────────
+// Each tab reveals only its settings group; estimates keep running for all
+// formats in the background, so the size badges + each panel stay current.
+const exportTabs = document.querySelectorAll('.etab');
+const fmtPanels = document.querySelectorAll('.fmt-panel');
+exportTabs.forEach(tab => {
+  tab.addEventListener('click', () => {
+    const fmt = tab.dataset.fmt;
+    exportTabs.forEach(t => {
+      const on = t === tab;
+      t.classList.toggle('active', on);
+      t.setAttribute('aria-selected', String(on));
+    });
+    fmtPanels.forEach(p => { p.hidden = p.dataset.fmt !== fmt; });
+  });
+});
 
 // ── Shared helpers ─────────────────────────────────────────
 // The single feedback zone (replaces the old footer). `state` drives hue + glyph:
@@ -620,61 +740,165 @@ function setBusy(running) {
   el.processBtn.disabled = running;
   el.pngSeqBtn.disabled = running;
   el.webpBtn.disabled = running;
+  el.gifBtn.disabled = running;
   if (running) {
     el.downloadBtn.disabled = true;
     el.downloadZipBtn.disabled = true;
     el.downloadWebpBtn.disabled = true;
+    el.downloadGifBtn.disabled = true;
   } else {
     el.downloadBtn.disabled = !outputBlob;
     el.downloadZipBtn.disabled = !zipBlob;
     el.downloadWebpBtn.disabled = !webpBlob;
+    el.downloadGifBtn.disabled = !gifBlob;
     scheduleEstimate(); // refresh estimate once the worker frees up
   }
 }
 
-// ── Live animated-WebP size estimate ───────────────────────
+// ── Live size estimates (WebP + GIF, each format its own line) ─────
 function formatSize(bytes) {
   if (bytes >= 1024 * 1024) return (bytes / 1024 / 1024).toFixed(2) + ' MB';
   return Math.max(1, Math.round(bytes / 1024)) + ' KB';
 }
 
-// Debounced — slider drags fire rapidly; only estimate once they settle.
-function scheduleEstimate() {
-  if (estTimer) clearTimeout(estTimer);
-  estTimer = setTimeout(updateEstimate, 220);
+// Estimates + tab badges always read in MB (no KB) so the unit never flips
+// between formats; tiny outputs floor to a "< 0.01 MB" hint instead of KB.
+function formatSizeMB(bytes) {
+  const mb = bytes / 1024 / 1024;
+  if (mb > 0 && mb < 0.01) return '< 0.01 MB';
+  return mb.toFixed(2) + ' MB';
 }
 
-async function updateEstimate() {
-  if (busy) return;                       // don't compete with a running export
-  if (!el.srcCanvas.width) { el.webpEstVal.textContent = '—'; return; }
-  const token = ++estToken;               // newest request wins
-  const { scale, skip, quality, alphaQuality } = getSeqParams();
+// Debounced — slider drags fire rapidly; only estimate once they settle. Both
+// formats re-estimate together, since each can be tuned independently.
+function scheduleEstimate() {
+  if (estTimer) clearTimeout(estTimer);
+  estTimer = setTimeout(updateEstimates, 220);
+}
 
-  // Pick representative frames + how many frames the real export will have.
-  let sampleFrames, outputFrameCount;
+// Pick the shared representative frames + the source frame total. After a real
+// run we sample the keyed frames (tight estimate); before, the live preview frame.
+function getSampleFrames() {
   if (processedFrames.length) {
     const mid = processedFrames.length >> 1, last = processedFrames.length - 1;
-    sampleFrames = [...new Set([0, mid, last])].map(i => processedFrames[i]);
-    outputFrameCount = Math.ceil(processedFrames.length / skip);
-  } else {
-    // Pre-processing: estimate from the current keyed preview frame.
-    const keyed = applyKey(srcCtx.getImageData(0, 0, el.srcCanvas.width, el.srcCanvas.height), getParams());
-    sampleFrames = [keyed];
-    const totalFrames = Math.ceil(el.video.duration * FPS);
-    outputFrameCount = Math.max(1, Math.ceil(totalFrames / skip));
+    return { frames: [...new Set([0, mid, last])].map(i => processedFrames[i]), sourceTotal: processedFrames.length };
   }
+  const keyed = applyKey(srcCtx.getImageData(0, 0, el.srcCanvas.width, el.srcCanvas.height), getParams());
+  return { frames: [keyed], sourceTotal: Math.ceil(el.video.duration * FPS) };
+}
 
-  el.webpEstVal.classList.add('is-stale');
+function updateEstimates() {
+  if (busy) return;                       // don't compete with a running export
+  if (!el.srcCanvas.width) {
+    for (const v of [el.webpEstVal, el.gifEstVal, el.pngEstVal, el.webmEstVal,
+                     el.tabSizeImage, el.tabSizeGif, el.tabSizeWebm]) v.textContent = '—';
+    return;
+  }
+  const { frames, sourceTotal } = getSampleFrames();
+  const sampled = processedFrames.length > 0;
+  updateWebpEstimate(frames, sourceTotal, sampled);   // → WebP bar + image tab badge
+  updatePngEstimate(frames, sourceTotal, sampled);    // → PNG/ZIP bar
+  updateGifEstimate(frames, sourceTotal, sampled);    // → GIF bar + GIF tab badge
+  updateWebmEstimate();                               // → WebM bar + WebM tab badge (duration-only)
+}
+
+// Toggle the stale style on an estimate value + its tab badge together.
+function markStale(valEl, badgeEl) {
+  valEl.classList.add('is-stale');
+  if (badgeEl) badgeEl.classList.add('is-stale');
+}
+function setEstimate(valEl, badgeEl, text) {
+  valEl.textContent = text;
+  valEl.classList.remove('is-stale');
+  if (badgeEl) { badgeEl.textContent = text; badgeEl.classList.remove('is-stale'); }
+}
+
+async function updateWebpEstimate(sampleFrames, sourceTotal, sampled) {
+  const token = ++estToken;               // newest request wins
+  const { scale, skip, quality, alphaQuality } = getSeqParams();
+  const outputFrameCount = Math.max(1, Math.ceil(sourceTotal / skip));
+  markStale(el.webpEstVal, el.tabSizeImage);    // image tab badge tracks the WebP size
   el.webpEstNote.textContent = '估算中…';
   try {
     const { bytes, frameCount } = await estimateWebpBytes(sampleFrames, { quality, scale, alphaQuality }, outputFrameCount);
     if (token !== estToken) return;       // superseded by a newer request
-    el.webpEstVal.textContent = '≈ ' + formatSize(bytes);
-    el.webpEstVal.classList.remove('is-stale');
-    el.webpEstNote.textContent = `${frameCount} 幀 · ${processedFrames.length ? '已去背取樣' : '預估'}`;
+    setEstimate(el.webpEstVal, el.tabSizeImage, '≈ ' + formatSizeMB(bytes));
+    el.webpEstNote.textContent = `${frameCount} 幀 · ${sampled ? '已去背取樣' : '預估'}`;
   } catch (e) {
     if (token !== estToken) return;
     el.webpEstNote.textContent = '估算失敗';
     console.error(e);
   }
+}
+
+async function updatePngEstimate(sampleFrames, sourceTotal, sampled) {
+  const token = ++pngEstToken;
+  const { scale, skip } = getSeqParams();  // PNG shares width/fps; quality is lossless-irrelevant
+  const outputFrameCount = Math.max(1, Math.ceil(sourceTotal / skip));
+  el.pngEstVal.classList.add('is-stale');
+  el.pngEstNote.textContent = '估算中…';
+  try {
+    const { bytes, frameCount } = await estimatePngZipBytes(sampleFrames, scale, outputFrameCount);
+    if (token !== pngEstToken) return;
+    el.pngEstVal.textContent = '≈ ' + formatSizeMB(bytes);
+    el.pngEstVal.classList.remove('is-stale');
+    el.pngEstNote.textContent = `${frameCount} 張 · ${sampled ? '已去背取樣' : '預估'}`;
+  } catch (e) {
+    if (token !== pngEstToken) return;
+    el.pngEstNote.textContent = '估算失敗';
+    console.error(e);
+  }
+}
+
+async function updateGifEstimate(sampleFrames, sourceTotal, sampled) {
+  const token = ++gifEstToken;
+  const { scale, skip, transparent, matte, dither } = getGifParams();
+  const outputFrameCount = Math.max(1, Math.ceil(sourceTotal / skip));
+  markStale(el.gifEstVal, el.tabSizeGif);
+  el.gifEstNote.textContent = '估算中…';
+  try {
+    const { bytes, frameCount } = await estimateGifBytes(sampleFrames, { scale, transparent, matte, dither }, outputFrameCount);
+    if (token !== gifEstToken) return;
+    setEstimate(el.gifEstVal, el.tabSizeGif, '≈ ' + formatSizeMB(bytes));
+    el.gifEstNote.textContent = `${frameCount} 幀 · ${sampled ? '已去背取樣' : '預估'}`;
+  } catch (e) {
+    if (token !== gifEstToken) return;
+    el.gifEstNote.textContent = '估算失敗';
+    console.error(e);
+  }
+}
+
+// WebM records the full clip at source size · 30fps · a fixed 10 Mbps target,
+// so its size depends only on duration (no settings, no sampling needed).
+function updateWebmEstimate() {
+  const dur = el.video.duration || 0;
+  if (!dur) { setEstimate(el.webmEstVal, el.tabSizeWebm, '—'); return; }
+  const bytes = Math.round((10_000_000 / 8) * dur); // 10 Mbps target → bytes
+  setEstimate(el.webmEstVal, el.tabSizeWebm, '≈ ' + formatSizeMB(bytes));
+  el.webmEstNote.textContent = `${Math.ceil(dur * FPS)} 幀 · 固定 10Mbps 上限估算`;
+}
+
+// Estimate the PNG-sequence ZIP size: encode a few representative frames to PNG
+// at the chosen width, average, and extrapolate. The ZIP uses STORE (no extra
+// compression), so total ≈ (avgPng + per-file overhead) × frames + EOCD.
+async function estimatePngZipBytes(sampleFrames, scale, outputFrameCount) {
+  if (!sampleFrames.length || outputFrameCount <= 0) return { bytes: 0, frameCount: 0 };
+  const srcW = sampleFrames[0].width, srcH = sampleFrames[0].height;
+  const gW = Math.max(1, Math.round(srcW * scale)), gH = Math.max(1, Math.round(srcH * scale));
+  const out = document.createElement('canvas'); out.width = gW; out.height = gH;
+  const outCtx2 = out.getContext('2d');
+  const full = document.createElement('canvas'); full.width = srcW; full.height = srcH;
+  const fullCtx2 = full.getContext('2d');
+  let sum = 0;
+  for (const f of sampleFrames) {
+    fullCtx2.putImageData(f, 0, 0);
+    outCtx2.clearRect(0, 0, gW, gH);
+    outCtx2.drawImage(full, 0, 0, gW, gH);
+    const blob = await new Promise(r => out.toBlob(r, 'image/png'));
+    sum += blob.size;
+  }
+  const perFrame = sum / sampleFrames.length;
+  const ZIP_PER_FILE = 76; // local header (~30) + central-directory entry (~46), STORE
+  const bytes = Math.round((perFrame + ZIP_PER_FILE) * outputFrameCount + 22); // + EOCD record
+  return { bytes, frameCount: outputFrameCount };
 }
