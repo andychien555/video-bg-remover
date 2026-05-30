@@ -1,6 +1,6 @@
 // ── App wiring: DOM, state, video pipeline, exporters ──────
 import { hexToRgb, applyKey } from './keying.js';
-import { encodeAnimatedWebP } from './webp-anim.js';
+import { encodeAnimatedWebP, estimateWebpBytes } from './webp-anim.js';
 
 // ── Constants ──────────────────────────────────────────────
 const FPS = 30;
@@ -40,6 +40,8 @@ const el = {
   seqSkip: $('seqSkip'),
   webpQ: $('webpQ'),
   cmdBox: $('cmdBox'),
+  webpEstVal: $('webpEstVal'),
+  webpEstNote: $('webpEstNote'),
 };
 const srcCtx = el.srcCanvas.getContext('2d', { willReadFrequently: true });
 const outCtx = el.outCanvas.getContext('2d');
@@ -56,6 +58,9 @@ let previewIdx = 0;
 let isPlaying = false;
 let playRafId = null;
 let lastPlayTs = null;
+let busy = false;          // an export is running
+let estTimer = null;       // debounce handle for the size estimate
+let estToken = 0;          // guards against stale async estimate results
 
 // ── Mode tabs ──────────────────────────────────────────────
 document.querySelectorAll('.tab').forEach(tab => {
@@ -87,6 +92,8 @@ function handleFile(file) {
   el.downloadBtn.disabled = true;
   el.downloadZipBtn.disabled = true;
   el.downloadWebpBtn.disabled = true;
+  el.webpEstVal.textContent = '—';
+  el.webpEstNote.textContent = '估算中…';
   el.video.src = URL.createObjectURL(file);
   el.video.addEventListener('loadedmetadata', () => {
     const w = el.video.videoWidth, h = el.video.videoHeight;
@@ -161,6 +168,7 @@ function livePreview() {
   if (!el.srcCanvas.width) return;
   if (processedFrames.length > 0) { outCtx.putImageData(processedFrames[previewIdx], 0, 0); return; }
   outCtx.putImageData(applyKey(srcCtx.getImageData(0, 0, el.srcCanvas.width, el.srcCanvas.height), getParams()), 0, 0);
+  scheduleEstimate(); // keying params changed the frame → re-estimate size
 }
 
 // ── Preview playback ───────────────────────────────────────
@@ -227,6 +235,7 @@ async function runFrames() {
   el.scrubber.max = processedFrames.length - 1;
   showFrame(0);
   el.outLabel.textContent = '去背結果 — 可預覽';
+  scheduleEstimate(); // now have real keyed frames → tighter estimate
 }
 
 // ── Export 1: transparent WebM (MediaRecorder) ─────────────
@@ -382,9 +391,9 @@ el.pngSeqBtn.addEventListener('click', async () => {
 el.downloadZipBtn.addEventListener('click', () => { if (zipBlob) triggerDownload(zipBlob, 'frames.zip'); });
 
 // ── Sequence option labels ─────────────────────────────────
-el.seqScale.addEventListener('input', e => { $('seqScaleVal').textContent = Math.round(e.target.value * 100) + '%'; });
-el.seqSkip.addEventListener('input', e => { $('seqSkipVal').textContent = e.target.value + '幀'; });
-el.webpQ.addEventListener('input', e => { $('webpQVal').textContent = e.target.value; });
+el.seqScale.addEventListener('input', e => { $('seqScaleVal').textContent = Math.round(e.target.value * 100) + '%'; scheduleEstimate(); });
+el.seqSkip.addEventListener('input', e => { $('seqSkipVal').textContent = e.target.value + '幀'; scheduleEstimate(); });
+el.webpQ.addEventListener('input', e => { $('webpQVal').textContent = e.target.value; scheduleEstimate(); });
 
 // ── Shared helpers ─────────────────────────────────────────
 function triggerDownload(blob, filename) {
@@ -395,11 +404,12 @@ function triggerDownload(blob, filename) {
 }
 
 // Disable every action button while one export is running.
-function setBusy(busy) {
-  el.processBtn.disabled = busy;
-  el.pngSeqBtn.disabled = busy;
-  el.webpBtn.disabled = busy;
-  if (busy) {
+function setBusy(running) {
+  busy = running;
+  el.processBtn.disabled = running;
+  el.pngSeqBtn.disabled = running;
+  el.webpBtn.disabled = running;
+  if (running) {
     el.downloadBtn.disabled = true;
     el.downloadZipBtn.disabled = true;
     el.downloadWebpBtn.disabled = true;
@@ -407,5 +417,53 @@ function setBusy(busy) {
     el.downloadBtn.disabled = !outputBlob;
     el.downloadZipBtn.disabled = !zipBlob;
     el.downloadWebpBtn.disabled = !webpBlob;
+    scheduleEstimate(); // refresh estimate once the worker frees up
+  }
+}
+
+// ── Live animated-WebP size estimate ───────────────────────
+function formatSize(bytes) {
+  if (bytes >= 1024 * 1024) return (bytes / 1024 / 1024).toFixed(2) + ' MB';
+  return Math.max(1, Math.round(bytes / 1024)) + ' KB';
+}
+
+// Debounced — slider drags fire rapidly; only estimate once they settle.
+function scheduleEstimate() {
+  if (estTimer) clearTimeout(estTimer);
+  estTimer = setTimeout(updateEstimate, 220);
+}
+
+async function updateEstimate() {
+  if (busy) return;                       // don't compete with a running export
+  if (!el.srcCanvas.width) { el.webpEstVal.textContent = '—'; return; }
+  const token = ++estToken;               // newest request wins
+  const { scale, skip, quality } = getSeqParams();
+
+  // Pick representative frames + how many frames the real export will have.
+  let sampleFrames, outputFrameCount;
+  if (processedFrames.length) {
+    const mid = processedFrames.length >> 1, last = processedFrames.length - 1;
+    sampleFrames = [...new Set([0, mid, last])].map(i => processedFrames[i]);
+    outputFrameCount = Math.ceil(processedFrames.length / skip);
+  } else {
+    // Pre-processing: estimate from the current keyed preview frame.
+    const keyed = applyKey(srcCtx.getImageData(0, 0, el.srcCanvas.width, el.srcCanvas.height), getParams());
+    sampleFrames = [keyed];
+    const totalFrames = Math.ceil(el.video.duration * FPS);
+    outputFrameCount = Math.max(1, Math.ceil(totalFrames / skip));
+  }
+
+  el.webpEstVal.classList.add('is-stale');
+  el.webpEstNote.textContent = '估算中…';
+  try {
+    const { bytes, frameCount } = await estimateWebpBytes(sampleFrames, { quality, scale }, outputFrameCount);
+    if (token !== estToken) return;       // superseded by a newer request
+    el.webpEstVal.textContent = '≈ ' + formatSize(bytes);
+    el.webpEstVal.classList.remove('is-stale');
+    el.webpEstNote.textContent = `${frameCount} 幀 · ${processedFrames.length ? '已去背取樣' : '預估'}`;
+  } catch (e) {
+    if (token !== estToken) return;
+    el.webpEstNote.textContent = '估算失敗';
+    console.error(e);
   }
 }

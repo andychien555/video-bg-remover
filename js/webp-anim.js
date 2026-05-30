@@ -161,3 +161,51 @@ export async function encodeAnimatedWebP(frames, opts) {
   ]);
   return new Blob([file], { type: 'image/webp' });
 }
+
+// Fixed container overhead: RIFF+WEBP (12) + VP8X (18) + ANIM (14).
+const WEBP_CONTAINER_OVERHEAD = 44;
+
+/**
+ * Estimate the final animated-WebP size WITHOUT encoding every frame.
+ * Because the muxer stores each frame independently (no inter-frame delta),
+ * total ≈ overhead + averageEncodedFrameSize × outputFrameCount. We encode a
+ * few representative sample frames at the chosen settings and extrapolate.
+ *
+ * @param {ImageData[]} sampleFrames    a few representative frames to encode
+ * @param {object} opts                 { quality, scale=1, lossless=0 }
+ * @param {number} outputFrameCount     how many frames the real export will have
+ * @returns {Promise<{bytes:number, perFrame:number, frameCount:number}>}
+ */
+export async function estimateWebpBytes(sampleFrames, opts, outputFrameCount) {
+  const { quality, scale = 1, lossless = 0 } = opts;
+  if (!sampleFrames.length || outputFrameCount <= 0) return { bytes: 0, perFrame: 0, frameCount: 0 };
+
+  const srcW = sampleFrames[0].width, srcH = sampleFrames[0].height;
+  const gW = Math.max(1, Math.round(srcW * scale));
+  const gH = Math.max(1, Math.round(srcH * scale));
+  const needScale = scale !== 1;
+
+  let fullCanvas, fullCtx, scaledCanvas, scaledCtx;
+  if (needScale) {
+    fullCanvas = document.createElement('canvas');
+    fullCanvas.width = srcW; fullCanvas.height = srcH;
+    fullCtx = fullCanvas.getContext('2d');
+    scaledCanvas = document.createElement('canvas');
+    scaledCanvas.width = gW; scaledCanvas.height = gH;
+    scaledCtx = scaledCanvas.getContext('2d', { willReadFrequently: true });
+  }
+
+  const encodeOpts = { quality, lossless, method: 4, exact: 0, alpha_quality: 100 };
+  let sum = 0;
+  for (const f of sampleFrames) {
+    const img = needScale
+      ? scaleFrame(f, gW, gH, fullCanvas, fullCtx, scaledCanvas, scaledCtx)
+      : f;
+    const still = await encode({ data: img.data, width: img.width, height: img.height }, encodeOpts);
+    const { chunks } = extractFrameChunks(still);
+    sum += buildANMF(chunks, gW, gH, 100).length; // duration doesn't affect byte size
+  }
+  const perFrame = sum / sampleFrames.length;
+  const bytes = Math.round(WEBP_CONTAINER_OVERHEAD + perFrame * outputFrameCount);
+  return { bytes, perFrame: Math.round(perFrame), frameCount: outputFrameCount };
+}

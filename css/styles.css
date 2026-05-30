@@ -336,6 +336,25 @@ input[type=range]:focus-visible::-webkit-slider-thumb {
   color: var(--text); font-size: 12px; min-width: 34px;
 }
 
+/* ── Live size estimate ────────────────────────────────── */
+.est-bar {
+  display: flex; align-items: baseline; gap: var(--s-3); flex-wrap: wrap;
+  margin-bottom: var(--s-5); padding: var(--s-3) var(--s-4);
+  background: var(--inset); border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+}
+.est-label {
+  font-family: var(--mono);
+  font-size: 10px; letter-spacing: 0.12em; color: var(--text-4);
+}
+.est-value {
+  font-family: var(--mono); font-feature-settings: "tnum" 1;
+  font-size: 16px; font-weight: 500; color: var(--text);
+  letter-spacing: -0.01em; margin-right: auto;
+}
+.est-value.is-stale { color: var(--text-3); }
+.est-note { font-size: 11px; color: var(--text-4); }
+
 .export-row {
   display: flex; align-items: center; justify-content: space-between;
   gap: var(--s-4); flex-wrap: wrap;
