@@ -3,116 +3,206 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>影片去背 · 動態 WebP</title>
+<title>bgremove · 影片去背 · 動態 WebP</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700&family=Spline+Sans+Mono:wght@400;500&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="css/styles.css">
 </head>
 <body>
-<h1>影片去背 <span class="info-badge">逐幀精確 · 30fps · 瀏覽器內合成動態 WebP</span></h1>
-<p class="subtitle">上傳影片 → 逐幀去背 → 一鍵輸出透明背景的動態 WebP（libwebp WASM，alpha 可靠）。也可匯出 WebM 或 PNG 序列。</p>
 
-<div class="upload-area" id="dropZone">
-  <div style="font-size:24px;margin-bottom:6px">&#8593;</div>
-  <strong>選擇影片檔案</strong>
-  <p>MP4 / WebM / MOV</p>
-  <input type="file" id="fileInput" accept="video/*">
-</div>
-
-<div class="canvases">
-  <div class="canvas-wrap">
-    <label>原始幀 <span id="coordHint" style="color:#5856d6;font-size:11px"></span></label>
-    <canvas id="srcCanvas" width="480" height="270" style="cursor:crosshair"></canvas>
+<header class="app-bar">
+  <div class="brand">
+    <span class="brand-mark" aria-hidden="true"></span>
+    <span class="brand-name">bgremove</span>
   </div>
-  <div class="canvas-wrap">
-    <label id="outLabel">去背預覽</label>
-    <canvas id="outCanvas" width="480" height="270"></canvas>
+  <div class="app-meta">
+    <span class="meta-pill">BROWSER-SIDE</span>
+    <span class="meta-dim">NO&nbsp;UPLOAD · NO&nbsp;WATERMARK</span>
   </div>
-</div>
+</header>
 
-<div class="preview-bar" id="previewBar">
-  <button id="playBtn">&#9654;</button>
-  <input type="range" id="scrubber" min="0" value="0" step="1">
-  <span class="frame-label" id="frameLabel">0 / 0</span>
-</div>
+<main class="shell">
 
-<div class="settings">
-  <div class="mode-tabs">
-    <div class="tab active" data-mode="luma">亮度鍵（黑/白底）</div>
-    <div class="tab" data-mode="chroma">色度鍵（綠/藍幕）</div>
+  <section class="hero">
+    <div class="hero-kicker">VIDEO&nbsp;MATTING&nbsp;TOOL — EST.&nbsp;2026</div>
+    <h1>影片去背，<br>逐幀精確。</h1>
+    <p class="subtitle">
+      上傳影片 → 逐幀去背 → 一鍵輸出透明背景的動態 WebP（libwebp WASM，alpha 可靠）。
+      也可匯出透明 WebM 或 PNG 序列。全程在瀏覽器內運算。
+    </p>
+    <div class="hero-spec">
+      <span><b>30</b> FPS</span>
+      <span class="dot"></span>
+      <span>逐幀合成</span>
+      <span class="dot"></span>
+      <span>透明 alpha</span>
+    </div>
+  </section>
+
+  <!-- ── STEP 01 · SOURCE ───────────────────────────────── -->
+  <section class="panel" aria-labelledby="lbl-upload">
+    <div class="panel-head">
+      <span class="step">01</span>
+      <span class="panel-label" id="lbl-upload">SOURCE</span>
+      <span class="panel-hint">MP4 / WEBM / MOV</span>
+    </div>
+
+    <div class="upload-area" id="dropZone">
+      <span class="upload-glyph" aria-hidden="true">↑</span>
+      <strong>拖放影片，或點擊選擇檔案</strong>
+      <p>檔案不會離開你的瀏覽器</p>
+      <input type="file" id="fileInput" accept="video/*">
+    </div>
+  </section>
+
+  <!-- ── WORKSPACE · two viewports ──────────────────────── -->
+  <section class="workspace">
+    <div class="canvas-wrap">
+      <div class="vp-bar">
+        <span class="vp-label">原始幀 · SOURCE</span>
+        <span class="vp-meta" id="coordHint"></span>
+      </div>
+      <div class="vp-stage">
+        <canvas id="srcCanvas" width="480" height="270" style="cursor:crosshair"></canvas>
+      </div>
+    </div>
+    <div class="canvas-wrap">
+      <div class="vp-bar">
+        <span class="vp-label" id="outLabel">去背預覽 · OUTPUT</span>
+        <span class="vp-meta vp-alpha">ALPHA</span>
+      </div>
+      <div class="vp-stage">
+        <canvas id="outCanvas" width="480" height="270"></canvas>
+      </div>
+    </div>
+  </section>
+
+  <div class="preview-bar" id="previewBar">
+    <button id="playBtn" aria-label="播放/暫停">&#9654;</button>
+    <input type="range" id="scrubber" min="0" value="0" step="1" aria-label="影格捲動">
+    <span class="frame-label" id="frameLabel">0 / 0</span>
   </div>
-  <div id="chromaColorRow" class="color-row" style="display:none">
-    <label>背景色</label>
-    <input type="color" id="colorPicker" value="#00ff00">
-    <div class="presets">
-      <div class="preset active" data-color="#00ff00" style="background:#00ff00"></div>
-      <div class="preset" data-color="#0000ff" style="background:#0000ff"></div>
-      <div class="preset" data-color="#ffffff" style="background:#fff;border-color:#333"></div>
-      <div class="preset" data-color="#000000" style="background:#000;border-color:#444"></div>
-    </div>
-    <button id="pickBtn">從畫面取色</button>
-  </div>
-  <div class="params">
-    <div class="setting-row">
-      <label id="threshLabel">黑色閾值（Threshold）<span id="threshVal">0.18</span></label>
-      <input type="range" id="threshRange" min="0.01" max="0.6" step="0.01" value="0.18">
-      <div class="tip">低於此亮度視為背景</div>
-    </div>
-    <div class="setting-row">
-      <label>柔邊（Feather）<span id="featherVal">0.12</span></label>
-      <input type="range" id="featherRange" min="0" max="0.4" step="0.01" value="0.12">
-      <div class="tip">邊緣漸變，避免鋸齒</div>
-    </div>
-    <div class="setting-row">
-      <label>邊緣內縮（Shrink）<span id="shrinkVal">1</span> px</label>
-      <input type="range" id="shrinkRange" min="0" max="6" step="1" value="1">
-      <div class="tip">消除黑邊，推薦 1–3</div>
-    </div>
-    <div class="setting-row" id="spillRow" style="display:none">
-      <label>溢色補償（Spill）<span id="spillVal">0.15</span></label>
-      <input type="range" id="spillRange" min="0" max="0.5" step="0.01" value="0.15">
-      <div class="tip">去除邊緣殘留背景色</div>
-    </div>
-    <div class="setting-row">
-      <label>亮度補償（Boost）<span id="boostVal">1.00</span></label>
-      <input type="range" id="boostRange" min="0.5" max="2.5" step="0.05" value="1.0">
-      <div class="tip">提亮主體邊緣過渡色</div>
-    </div>
-  </div>
-</div>
 
-<!-- Output settings: shared by WebP and PNG sequence -->
-<div class="seq-opts" id="webpOpts" style="display:flex">
-  <label>縮放 <input type="range" id="seqScale" min="0.2" max="1" step="0.05" value="1"> <span class="val" id="seqScaleVal">100%</span></label>
-  <label>每幀間隔 <input type="range" id="seqSkip" min="1" max="10" step="1" value="1"> <span class="val" id="seqSkipVal">1幀</span></label>
-  <label>WebP 品質 <input type="range" id="webpQ" min="0" max="100" step="5" value="80"> <span class="val" id="webpQVal">80</span></label>
-</div>
+  <!-- ── STEP 02 · KEYING ───────────────────────────────── -->
+  <section class="panel" aria-labelledby="lbl-key">
+    <div class="panel-head">
+      <span class="step">02</span>
+      <span class="panel-label" id="lbl-key">KEYING</span>
+      <span class="panel-hint">去背參數</span>
+    </div>
 
-<!-- Headline action: animated WebP -->
-<div class="section-title headline">⭐ 動態 WebP（透明背景，一鍵自動下載）</div>
-<div class="controls">
-  <button id="webpBtn" disabled>轉成動態 WebP</button>
-  <button id="downloadWebpBtn" disabled>下載 anim.webp</button>
-</div>
+    <div class="mode-tabs">
+      <div class="tab active" data-mode="luma">亮度鍵 · 黑/白底</div>
+      <div class="tab" data-mode="chroma">色度鍵 · 綠/藍幕</div>
+    </div>
 
-<!-- Secondary: transparent WebM -->
-<div class="section-title">透明背景 WebM（影片用）</div>
-<div class="controls">
-  <button id="processBtn" disabled>處理並匯出 .webm</button>
-  <button id="downloadBtn" disabled>下載 removed-bg.webm</button>
-</div>
+    <div id="chromaColorRow" class="color-row" style="display:none">
+      <label>背景色</label>
+      <input type="color" id="colorPicker" value="#00ff00">
+      <div class="presets">
+        <div class="preset active" data-color="#00ff00" style="--c:#00ff00"></div>
+        <div class="preset" data-color="#0000ff" style="--c:#0000ff"></div>
+        <div class="preset" data-color="#ffffff" style="--c:#ffffff"></div>
+        <div class="preset" data-color="#000000" style="--c:#000000"></div>
+      </div>
+      <button class="btn-ghost" id="pickBtn">從畫面取色</button>
+    </div>
 
-<!-- Secondary: PNG sequence for offline img2webp -->
-<div class="section-title">PNG 序列（離線用 img2webp 合成）</div>
-<div class="controls">
-  <button id="pngSeqBtn" disabled>匯出 PNG 序列 (ZIP)</button>
-  <button id="downloadZipBtn" disabled>下載 frames.zip</button>
-</div>
-<div id="cmdBox" style="display:none;margin-top:10px;padding:10px 14px;background:#0d0d0d;border:0.5px solid #2a2a2a;border-radius:8px;font-family:ui-monospace,monospace;font-size:12px;color:#7ec699;overflow-x:auto;white-space:nowrap"></div>
+    <div class="params">
+      <div class="setting-row">
+        <label id="threshLabel">黑色閾值 · Threshold <span id="threshVal">0.18</span></label>
+        <input type="range" id="threshRange" min="0.01" max="0.6" step="0.01" value="0.18">
+        <div class="tip">低於此亮度視為背景</div>
+      </div>
+      <div class="setting-row">
+        <label>柔邊 · Feather <span id="featherVal">0.12</span></label>
+        <input type="range" id="featherRange" min="0" max="0.4" step="0.01" value="0.12">
+        <div class="tip">邊緣漸變，避免鋸齒</div>
+      </div>
+      <div class="setting-row">
+        <label>邊緣內縮 · Shrink <span id="shrinkVal">1</span> px</label>
+        <input type="range" id="shrinkRange" min="0" max="6" step="1" value="1">
+        <div class="tip">消除黑邊，推薦 1–3</div>
+      </div>
+      <div class="setting-row" id="spillRow" style="display:none">
+        <label>溢色補償 · Spill <span id="spillVal">0.15</span></label>
+        <input type="range" id="spillRange" min="0" max="0.5" step="0.01" value="0.15">
+        <div class="tip">去除邊緣殘留背景色</div>
+      </div>
+      <div class="setting-row">
+        <label>亮度補償 · Boost <span id="boostVal">1.00</span></label>
+        <input type="range" id="boostRange" min="0.5" max="2.5" step="0.05" value="1.0">
+        <div class="tip">提亮主體邊緣過渡色</div>
+      </div>
+    </div>
+  </section>
 
-<div class="status" id="status">請先上傳影片</div>
-<div class="prog-wrap" id="progWrap">
-  <progress id="prog" max="100" value="0"></progress>
-  <div class="prog-label" id="progLabel"></div>
-</div>
+  <!-- ── STEP 03 · EXPORT ───────────────────────────────── -->
+  <section class="panel" aria-labelledby="lbl-export">
+    <div class="panel-head">
+      <span class="step">03</span>
+      <span class="panel-label" id="lbl-export">EXPORT</span>
+      <span class="panel-hint">輸出設定</span>
+    </div>
+
+    <!-- shared output settings: WebP and PNG sequence -->
+    <div class="seq-opts" id="webpOpts">
+      <label>縮放 <input type="range" id="seqScale" min="0.2" max="1" step="0.05" value="1"> <span class="val" id="seqScaleVal">100%</span></label>
+      <label>每幀間隔 <input type="range" id="seqSkip" min="1" max="10" step="1" value="1"> <span class="val" id="seqSkipVal">1幀</span></label>
+      <label>WebP 品質 <input type="range" id="webpQ" min="0" max="100" step="5" value="80"> <span class="val" id="webpQVal">80</span></label>
+    </div>
+
+    <!-- headline action: animated WebP -->
+    <div class="export-row export-row--primary">
+      <div class="export-copy">
+        <div class="export-title">動態 WebP <span class="export-tag">PRIMARY</span></div>
+        <div class="export-desc">透明背景，一鍵自動下載</div>
+      </div>
+      <div class="controls">
+        <button class="btn-solid" id="webpBtn" disabled>轉成動態 WebP</button>
+        <button class="btn-outline" id="downloadWebpBtn" disabled>下載 anim.webp</button>
+      </div>
+    </div>
+
+    <!-- secondary: transparent WebM -->
+    <div class="export-row">
+      <div class="export-copy">
+        <div class="export-title">透明 WebM</div>
+        <div class="export-desc">影片用，保留 alpha 通道</div>
+      </div>
+      <div class="controls">
+        <button class="btn-ghost" id="processBtn" disabled>處理並匯出 .webm</button>
+        <button class="btn-outline" id="downloadBtn" disabled>下載 removed-bg.webm</button>
+      </div>
+    </div>
+
+    <!-- secondary: PNG sequence -->
+    <div class="export-row">
+      <div class="export-copy">
+        <div class="export-title">PNG 序列</div>
+        <div class="export-desc">離線用 img2webp 合成</div>
+      </div>
+      <div class="controls">
+        <button class="btn-ghost" id="pngSeqBtn" disabled>匯出 PNG 序列 (ZIP)</button>
+        <button class="btn-outline" id="downloadZipBtn" disabled>下載 frames.zip</button>
+      </div>
+    </div>
+
+    <div id="cmdBox"></div>
+  </section>
+
+  <!-- ── STATUS BAR ─────────────────────────────────────── -->
+  <footer class="status-bar">
+    <span class="status-led" aria-hidden="true"></span>
+    <span class="status" id="status">請先上傳影片</span>
+    <div class="prog-wrap" id="progWrap">
+      <progress id="prog" max="100" value="0"></progress>
+      <div class="prog-label" id="progLabel"></div>
+    </div>
+  </footer>
+
+</main>
 
 <video id="hiddenVideo" style="display:none" playsinline muted></video>
 <canvas id="workCanvas" style="display:none"></canvas>

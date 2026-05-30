@@ -73,9 +73,9 @@ document.querySelectorAll('.tab').forEach(tab => {
 
 // ── Upload ─────────────────────────────────────────────────
 el.dropZone.addEventListener('click', () => el.fileInput.click());
-el.dropZone.addEventListener('dragover', e => { e.preventDefault(); el.dropZone.style.borderColor = '#666'; });
-el.dropZone.addEventListener('dragleave', () => el.dropZone.style.borderColor = '#333');
-el.dropZone.addEventListener('drop', e => { e.preventDefault(); handleFile(e.dataTransfer.files[0]); });
+el.dropZone.addEventListener('dragover', e => { e.preventDefault(); el.dropZone.classList.add('dragover'); });
+el.dropZone.addEventListener('dragleave', () => el.dropZone.classList.remove('dragover'));
+el.dropZone.addEventListener('drop', e => { e.preventDefault(); el.dropZone.classList.remove('dragover'); handleFile(e.dataTransfer.files[0]); });
 el.fileInput.addEventListener('change', () => handleFile(el.fileInput.files[0]));
 
 function handleFile(file) {
