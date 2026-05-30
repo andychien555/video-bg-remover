@@ -1,0 +1,22 @@
+{
+  "name": "video-bg-remover",
+  "version": "1.0.0",
+  "description": "純瀏覽器影片去背工具，一鍵輸出透明背景的動態 WebP（libwebp WASM）",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "start": "python3 -m http.server 8000",
+    "serve": "npx --yes serve ."
+  },
+  "keywords": [
+    "webp",
+    "animated-webp",
+    "background-removal",
+    "chroma-key",
+    "luma-key",
+    "libwebp",
+    "webassembly",
+    "browser"
+  ],
+  "license": "MIT"
+}

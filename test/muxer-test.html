@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>WebP muxer test</title>
+<style>
+  body { font-family: ui-monospace, monospace; background:#111; color:#eee; padding:20px; }
+  #checker { background: repeating-conic-gradient(#2a2a2a 0% 25%, #444 0% 50%) 0 0 / 24px 24px; display:inline-block; padding:8px; border-radius:8px; }
+  pre { white-space: pre-wrap; }
+  .ok { color:#30d158; } .bad { color:#ff453a; }
+</style>
+</head>
+<body>
+<h2>Animated WebP muxer self-test</h2>
+<pre id="log">running…</pre>
+<div id="checker"><img id="out" alt="result"></div>
+<script type="module">
+import { encodeAnimatedWebP } from '../js/webp-anim.js';
+
+const W = 120, H = 90, N = 8;
+// Build N transparent frames with an opaque magenta square sweeping across.
+function makeFrame(i) {
+  const data = new Uint8ClampedArray(W * H * 4); // all zero = fully transparent
+  const sx = Math.round((W - 30) * (i / (N - 1)));
+  for (let y = 30; y < 60; y++) for (let x = sx; x < sx + 30; x++) {
+    const o = (y * W + x) * 4;
+    data[o] = 191; data[o + 1] = 90; data[o + 2] = 242; data[o + 3] = 255; // opaque #bf5af2
+  }
+  return new ImageData(data, W, H);
+}
+
+const log = document.getElementById('log');
+const lines = [];
+function note(msg, ok) { lines.push((ok === undefined ? '· ' : ok ? '✓ ' : '✗ ') + msg); log.innerHTML = lines.map(l => l.startsWith('✗') ? `<span class="bad">${l}</span>` : l.startsWith('✓') ? `<span class="ok">${l}</span>` : l).join('\n'); }
+
+function fourcc(buf, off) { return String.fromCharCode(buf[off], buf[off + 1], buf[off + 2], buf[off + 3]); }
+
+(async () => {
+  try {
+    const frames = Array.from({ length: N }, (_, i) => makeFrame(i));
+    note(`built ${N} synthetic ${W}×${H} frames`);
+    const t0 = performance.now();
+    const blob = await encodeAnimatedWebP(frames, { fps: 8, quality: 80 });
+    const ms = Math.round(performance.now() - t0);
+    note(`encoded in ${ms}ms, blob = ${blob.size} bytes, type=${blob.type}`, blob.size > 0);
+
+    const buf = new Uint8Array(await blob.arrayBuffer());
+    note(`header: ${fourcc(buf, 0)} … ${fourcc(buf, 8)}`, fourcc(buf, 0) === 'RIFF' && fourcc(buf, 8) === 'WEBP');
+
+    // Walk top-level chunks, count ANMF.
+    const seen = {}; let off = 12, anmf = 0;
+    while (off + 8 <= buf.length) {
+      const tag = fourcc(buf, off);
+      const size = buf[off + 4] | (buf[off + 5] << 8) | (buf[off + 6] << 16) | (buf[off + 7] * 0x1000000);
+      seen[tag] = (seen[tag] || 0) + 1;
+      if (tag === 'ANMF') anmf++;
+      off += 8 + size + (size & 1);
+    }
+    note(`chunks: ${JSON.stringify(seen)}`);
+    note(`has VP8X / ANIM`, !!seen.VP8X && !!seen.ANIM);
+    note(`ANMF count = ${anmf} (expected ${N})`, anmf === N);
+
+    // RIFF size field should match actual body length.
+    const riffSize = buf[4] | (buf[5] << 8) | (buf[6] << 16) | (buf[7] * 0x1000000);
+    note(`RIFF size field = ${riffSize}, actual body = ${buf.length - 8}`, riffSize === buf.length - 8);
+
+    // Decode test: let the browser's native decoder render it.
+    const img = document.getElementById('out');
+    await new Promise((res, rej) => { img.onload = res; img.onerror = () => rej(new Error('img decode failed')); img.src = URL.createObjectURL(blob); });
+    note(`browser decoded: naturalSize ${img.naturalWidth}×${img.naturalHeight}`, img.naturalWidth === W && img.naturalHeight === H);
+
+    const allOk = lines.every(l => !l.startsWith('✗'));
+    note(allOk ? 'ALL CHECKS PASSED' : 'SOME CHECKS FAILED', allOk);
+    window.__testResult = { ok: allOk, lines };
+  } catch (e) {
+    note('EXCEPTION: ' + e.message, false);
+    window.__testResult = { ok: false, error: e.message };
+    console.error(e);
+  }
+})();
+</script>
+</body>
+</html>

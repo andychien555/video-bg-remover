@@ -1,0 +1,17 @@
+# OS
+.DS_Store
+Thumbs.db
+
+# Editor
+.vscode/
+.idea/
+
+# Node (not required — deps are vendored — but ignore if ever used)
+node_modules/
+
+# Scratch / local test artifacts
+/tmp/
+*.local
+
+# gstack browse local state
+.gstack/
