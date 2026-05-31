@@ -3,6 +3,7 @@ import { hexToRgb, applyKey, analyzeResidue, toAlphaView, RESIDUE_COLOR } from '
 import { encodeAnimatedWebP, estimateWebpBytes } from './webp-anim.js';
 import { encodeAnimatedGif, estimateGifBytes } from './gif-anim.js';
 import { extractFrames, estimateMemoryBytes } from './pipeline.js';
+import { encodeMov } from './mov-encoder.js';
 
 // ── Constants ──────────────────────────────────────────────
 const FPS = 30;
@@ -75,6 +76,13 @@ const el = {
   tabSizeImage: $('tabSizeImage'),
   tabSizeGif: $('tabSizeGif'),
   tabSizeWebm: $('tabSizeWebm'),
+  tabSizeMov: $('tabSizeMov'),
+  movScale: $('movScale'),
+  movWidthInput: $('movWidthInput'),
+  movFps: $('movFps'),
+  movCodec: $('movCodec'),
+  movBtn: $('movBtn'),
+  downloadMovBtn: $('downloadMovBtn'),
   alphaBadge: $('alphaBadge'),
   residueVal: $('residueVal'),
   residueToggle: $('residueToggle'),
@@ -91,6 +99,7 @@ let outputBlob = null;   // webm
 let zipBlob = null;      // png sequence zip
 let webpBlob = null;     // animated webp
 let gifBlob = null;      // animated gif
+let movBlob = null;      // alpha QuickTime (.mov, via ffmpeg.wasm)
 let processedFrames = [];
 let previewIdx = 0;
 let isPlaying = false;
@@ -145,11 +154,12 @@ function handleFile(file) {
   hideFeedback();
   el.progWrap.style.display = 'none';
   el.previewBar.style.display = 'none';
-  outputBlob = zipBlob = webpBlob = gifBlob = null;
+  outputBlob = zipBlob = webpBlob = gifBlob = movBlob = null;
   el.downloadBtn.disabled = true;
   el.downloadZipBtn.disabled = true;
   el.downloadWebpBtn.disabled = true;
   el.downloadGifBtn.disabled = true;
+  el.downloadMovBtn.disabled = true;
   el.webpEstVal.textContent = '—';
   el.webpEstNote.textContent = '估算中…';
   el.gifEstVal.textContent = '—';
@@ -158,7 +168,7 @@ function handleFile(file) {
   el.pngEstNote.textContent = '估算中…';
   el.webmEstVal.textContent = '—';
   el.webmEstNote.textContent = '估算中…';
-  el.tabSizeImage.textContent = el.tabSizeGif.textContent = el.tabSizeWebm.textContent = '—';
+  el.tabSizeImage.textContent = el.tabSizeGif.textContent = el.tabSizeWebm.textContent = el.tabSizeMov.textContent = '—';
   el.video.src = URL.createObjectURL(file);
   el.video.addEventListener('loadedmetadata', () => {
     const w = el.video.videoWidth, h = el.video.videoHeight;
@@ -180,6 +190,7 @@ function handleFile(file) {
     el.pngSeqBtn.disabled = false;
     el.webpBtn.disabled = false;
     el.gifBtn.disabled = false;
+    el.movBtn.disabled = false;
   }, { once: true });
 }
 
@@ -275,16 +286,32 @@ function getGifParams() {
   };
 }
 
+// MOV has its own width / fps / codec, like GIF.
+function getMovParams() {
+  const srcW = el.video.videoWidth;
+  const scale = srcW ? parseInt(el.movScale.value) / srcW : 1;
+  return {
+    scale,
+    skip: Math.round(FPS / FPS_PRESETS[parseInt(el.movFps.value)]),
+    fps: FPS_PRESETS[parseInt(el.movFps.value)],
+    codec: el.movCodec.value, // 'prores' | 'png'
+  };
+}
+
 // Configure width controls against the loaded video: cap at source width (no upscaling)
 function configureWidthSlider(srcW) {
   const minW = Math.min(64, srcW);
-  [el.seqScale, el.seqWidthInput, el.gifScale, el.gifWidthInput].forEach(c => { c.min = minW; c.max = srcW; c.step = 2; });
+  [el.seqScale, el.seqWidthInput, el.gifScale, el.gifWidthInput, el.movScale, el.movWidthInput]
+    .forEach(c => { c.min = minW; c.max = srcW; c.step = 2; });
   el.seqScale.value = srcW;
   el.seqWidthInput.value = srcW;   // default = original size (100%)
   // GIF defaults a bit smaller — GIF files are big, and full-res is rarely wanted.
   const gifDefault = Math.max(minW, Math.min(srcW, Math.round(srcW / 2 / 2) * 2));
   el.gifScale.value = gifDefault;
   el.gifWidthInput.value = gifDefault;
+  // MOV defaults to full size (it's the pro/editing output).
+  el.movScale.value = srcW;
+  el.movWidthInput.value = srcW;
   updateHeightHint();
 }
 // derive height from the current width + source aspect ratio
@@ -295,6 +322,9 @@ function updateHeightHint() {
     : '—';
   $('gifHeightVal').textContent = srcW
     ? Math.round(srcH * parseInt(el.gifScale.value) / srcW)
+    : '—';
+  $('movHeightVal').textContent = srcW
+    ? Math.round(srcH * parseInt(el.movScale.value) / srcW)
     : '—';
 }
 // slider moved → mirror into the number field (shared by WebP + GIF width rows)
@@ -543,6 +573,39 @@ el.processBtn.addEventListener('click', async () => {
 });
 el.downloadBtn.addEventListener('click', () => { if (outputBlob) triggerDownload(outputBlob, `${baseName}-nobg.webm`); });
 
+// ── Export 1b: transparent MOV (ffmpeg.wasm) ───────────────
+async function runMov() {
+  const params = getMovParams();
+  el.progWrap.style.display = 'block';
+  el.prog.value = 0;
+  el.progLabel.textContent = 'MOV 準備中…';
+
+  const { blob, width, height, count } = await encodeMov(processedFrames, params, {
+    onStatus: msg => { el.progLabel.textContent = msg; },
+    onProgress: ratio => { el.prog.value = Math.round(ratio * 100); },
+  });
+
+  movBlob = blob;
+  el.prog.value = 100;
+  const codecName = params.codec === 'prores' ? 'ProRes 4444' : 'QuickTime Animation';
+  showFeedback('success', `透明 MOV 完成 · ${codecName} · ${count} 幀 · ${width}×${height} · ${formatSize(blob.size)}`);
+  el.tabSizeMov.textContent = '≈ ' + formatSizeMB(blob.size);
+  el.downloadMovBtn.disabled = false;
+}
+
+el.movBtn.addEventListener('click', async () => {
+  stopPlayback();
+  setBusy(true);
+  movBlob = null;
+  el.downloadMovBtn.disabled = true;
+  try {
+    if (!processedFrames.length) await runFrames();
+    await runMov();
+  } catch (e) { reportError('MOV 錯誤：', e); }
+  setBusy(false);
+});
+el.downloadMovBtn.addEventListener('click', () => { if (movBlob) triggerDownload(movBlob, `${baseName}-nobg.mov`); });
+
 // ── Export 2: animated WebP (the headline feature) ─────────
 el.webpBtn.addEventListener('click', async () => {
   stopPlayback();
@@ -698,7 +761,25 @@ el.gifTransparent.addEventListener('change', () => {
   scheduleEstimate();
 });
 
-// ── Export format tabs (WebP/PNG · GIF · WebM) ─────────────
+// ── MOV option labels (independent settings; no live estimate — size is
+// only known after the ffmpeg encode) ─────────────────────
+el.movScale.addEventListener('input', () => { el.movWidthInput.value = el.movScale.value; updateHeightHint(); });
+el.movWidthInput.addEventListener('input', () => syncMovWidthFromInput(false));
+el.movWidthInput.addEventListener('change', () => syncMovWidthFromInput(true));
+el.movFps.addEventListener('input', e => { $('movFpsVal').textContent = FPS_PRESETS[parseInt(e.target.value)] + 'fps'; });
+function syncMovWidthFromInput(writeBack) {
+  const srcW = el.video.videoWidth;
+  if (!srcW) return;
+  let w = parseInt(el.movWidthInput.value);
+  if (isNaN(w)) { if (writeBack) el.movWidthInput.value = el.movScale.value; return; }
+  const minW = parseInt(el.movScale.min), maxW = parseInt(el.movScale.max);
+  w = Math.max(minW, Math.min(maxW, Math.round(w / 2) * 2));
+  el.movScale.value = w;
+  if (writeBack) el.movWidthInput.value = w;
+  updateHeightHint();
+}
+
+// ── Export format tabs (WebP/PNG · GIF · WebM · MOV) ───────
 // Each tab reveals only its settings group; estimates keep running for all
 // formats in the background, so the size badges + each panel stay current.
 const exportTabs = document.querySelectorAll('.etab');
@@ -753,16 +834,19 @@ function setBusy(running) {
   el.pngSeqBtn.disabled = running;
   el.webpBtn.disabled = running;
   el.gifBtn.disabled = running;
+  el.movBtn.disabled = running;
   if (running) {
     el.downloadBtn.disabled = true;
     el.downloadZipBtn.disabled = true;
     el.downloadWebpBtn.disabled = true;
     el.downloadGifBtn.disabled = true;
+    el.downloadMovBtn.disabled = true;
   } else {
     el.downloadBtn.disabled = !outputBlob;
     el.downloadZipBtn.disabled = !zipBlob;
     el.downloadWebpBtn.disabled = !webpBlob;
     el.downloadGifBtn.disabled = !gifBlob;
+    el.downloadMovBtn.disabled = !movBlob;
     scheduleEstimate(); // refresh estimate once the worker frees up
   }
 }
