@@ -103,6 +103,7 @@ let gifEstToken = 0;       // same staleness guard for the independent GIF estim
 let pngEstToken = 0;       // …and for the PNG/ZIP estimate
 let alphaView = false;     // ALPHA badge toggles the alpha-matte preview
 let highlightOn = false;   // 殘留 switch: persistently highlight residue pixels
+let baseName = 'output';   // uploaded file's name (sans extension); used for download filenames
 
 // ── Theme toggle ───────────────────────────────────────────
 // initial data-theme is set by the inline <head> script (no-FOUC); here we
@@ -137,6 +138,7 @@ el.fileInput.addEventListener('change', () => handleFile(el.fileInput.files[0]))
 
 function handleFile(file) {
   if (!file || !file.type.startsWith('video/')) return;
+  baseName = file.name.replace(/\.[^.]+$/, '') || 'output'; // strip extension; keep original name
   stopPlayback();
   stopLivePlayback();
   processedFrames = [];
@@ -539,7 +541,7 @@ el.processBtn.addEventListener('click', async () => {
   catch (e) { reportError('錯誤：', e); }
   setBusy(false);
 });
-el.downloadBtn.addEventListener('click', () => { if (outputBlob) triggerDownload(outputBlob, 'removed-bg.webm'); });
+el.downloadBtn.addEventListener('click', () => { if (outputBlob) triggerDownload(outputBlob, `${baseName}-nobg.webm`); });
 
 // ── Export 2: animated WebP (the headline feature) ─────────
 el.webpBtn.addEventListener('click', async () => {
@@ -564,13 +566,13 @@ el.webpBtn.addEventListener('click', async () => {
     const frameCount = Math.ceil(processedFrames.length / skip);
     showFeedback('success', `動態 WebP 完成 · ${frameCount} 幀 · ${formatSize(webpBlob.size)} · 已自動下載`);
     el.downloadWebpBtn.disabled = false;
-    triggerDownload(webpBlob, 'anim.webp'); // fully automatic download
+    triggerDownload(webpBlob, `${baseName}-nobg.webp`); // fully automatic download
   } catch (e) {
     reportError('動態 WebP 錯誤：', e);
   }
   setBusy(false);
 });
-el.downloadWebpBtn.addEventListener('click', () => { if (webpBlob) triggerDownload(webpBlob, 'anim.webp'); });
+el.downloadWebpBtn.addEventListener('click', () => { if (webpBlob) triggerDownload(webpBlob, `${baseName}-nobg.webp`); });
 
 // ── Export 2b: animated GIF (max compatibility, 256 colours, 1-bit alpha) ──
 el.gifBtn.addEventListener('click', async () => {
@@ -595,13 +597,13 @@ el.gifBtn.addEventListener('click', async () => {
     const bg = transparent ? '透明' : '純色底';
     showFeedback('success', `動態 GIF 完成 · ${frameCount} 幀 · ${bg} · ${formatSize(gifBlob.size)} · 已自動下載`);
     el.downloadGifBtn.disabled = false;
-    triggerDownload(gifBlob, 'anim.gif'); // fully automatic download
+    triggerDownload(gifBlob, `${baseName}-nobg.gif`); // fully automatic download
   } catch (e) {
     reportError('動態 GIF 錯誤：', e);
   }
   setBusy(false);
 });
-el.downloadGifBtn.addEventListener('click', () => { if (gifBlob) triggerDownload(gifBlob, 'anim.gif'); });
+el.downloadGifBtn.addEventListener('click', () => { if (gifBlob) triggerDownload(gifBlob, `${baseName}-nobg.gif`); });
 
 // ── Export 3: PNG sequence (ZIP) + reference img2webp command ──
 function buildImg2webpCmd(skip, quality) {
@@ -670,7 +672,7 @@ el.pngSeqBtn.addEventListener('click', async () => {
   } catch (e) { reportError('PNG 序列錯誤：', e); }
   setBusy(false);
 });
-el.downloadZipBtn.addEventListener('click', () => { if (zipBlob) triggerDownload(zipBlob, 'frames.zip'); });
+el.downloadZipBtn.addEventListener('click', () => { if (zipBlob) triggerDownload(zipBlob, `${baseName}-frames.zip`); });
 
 // ── Sequence option labels (shared WebP + PNG) ─────────────
 el.seqScale.addEventListener('input', () => syncWidthFromSlider(el.seqScale, el.seqWidthInput));

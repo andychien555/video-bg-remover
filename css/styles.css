@@ -428,7 +428,8 @@ canvas { width: 100%; display: block; }
   white-space: nowrap; user-select: none;
 }
 .tab:hover { color: var(--text-2); }
-.tab.active { background: #fff; color: oklch(0.24 0.01 265); box-shadow: 0 1px 3px oklch(0 0 0 / 0.25); }
+.tab.active { background: var(--surface-2); color: var(--text); box-shadow: 0 1px 0 oklch(0 0 0 / 0.3); }
+html[data-theme="light"] .tab.active { background: #fff; box-shadow: 0 1px 3px oklch(0 0 0 / 0.25); }
 
 /* ── Chroma color row ──────────────────────────────────── */
 .color-row {
@@ -629,14 +630,15 @@ input[type=range]:focus-visible::-webkit-slider-thumb {
   transition: color .15s var(--ease), background .15s var(--ease);
 }
 .etab:hover { color: var(--text-2); }
-.etab.active { background: #fff; color: oklch(0.24 0.01 265); box-shadow: 0 1px 3px oklch(0 0 0 / 0.25); }
+.etab.active { background: var(--surface-2); color: var(--text); box-shadow: 0 1px 0 oklch(0 0 0 / 0.3); }
+html[data-theme="light"] .etab.active { background: #fff; box-shadow: 0 1px 3px oklch(0 0 0 / 0.25); }
 .etab:focus-visible { outline: 2px solid var(--text); outline-offset: 2px; }
 .etab-name { font-size: 13.5px; font-weight: 500; white-space: nowrap; }
 .etab-size {
   font-family: var(--mono); font-feature-settings: "tnum" 1;
   font-size: 11.5px; color: var(--text-4); letter-spacing: -0.01em;
 }
-.etab.active .etab-size { color: oklch(0.45 0.01 265); }
+.etab.active .etab-size { color: var(--text-3); }
 .etab-size.is-stale { opacity: 0.45; }
 
 /* WebM tab: explanatory note in place of sliders */
