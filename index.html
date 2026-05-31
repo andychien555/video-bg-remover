@@ -348,27 +348,65 @@
 
     </div><!-- /tab gif -->
 
-    <!-- ── TAB: WebM (fixed spec · no settings) ──────────────── -->
+    <!-- ── TAB: WebM (ffmpeg.wasm · VP9-alpha · CRF compression) ── -->
     <div class="fmt-panel" data-fmt="webm" role="tabpanel" hidden>
-      <div class="fmt-note">
-        透明 WebM 固定以 <b>原始尺寸 · 30fps · 10Mbps</b> 錄製，<b>不受上方設定影響</b>。
-        適合丟進剪輯軟體、保留 alpha 通道。
+
+    <div class="seq-opts" id="webmOpts">
+      <div class="seq-row">
+        <span class="seq-head">
+          <span class="seq-name">WebM 寬度</span>
+          <span class="info" tabindex="0" role="img" aria-label="WebM 寬度說明"
+                data-tip="WebM 輸出寬度（像素）。高度依原始比例自動換算；上限為原始尺寸，不會放大。調小寬度可大幅減少檔案。">i</span>
+        </span>
+        <span class="seq-val">
+          <input type="number" id="webmWidthInput" class="num-input" min="64" max="1920" step="2" aria-label="WebM 輸出寬度（像素）">
+          <span class="seq-unit">× <span id="webmHeightVal">—</span> px</span>
+        </span>
+        <input type="range" id="webmScale" min="64" max="1920" step="2" value="1920">
       </div>
-      <div class="output-group">
-        <div class="output-copy">
-          <div class="export-title">透明 WebM</div>
-          <div class="export-desc">影片用，保留 alpha 通道</div>
-        </div>
-        <div class="est-bar" id="webmEst" aria-live="polite">
-          <span class="est-label">EST. WEBM SIZE</span>
-          <span class="est-value" id="webmEstVal">—</span>
-          <span class="est-note" id="webmEstNote">上傳影片後即時估算</span>
-        </div>
-        <div class="controls">
-          <button class="btn-brand" id="processBtn" disabled>處理並匯出 .webm</button>
-          <button class="btn-outline" id="downloadBtn" disabled>下載 removed-bg.webm</button>
-        </div>
+      <div class="seq-row">
+        <span class="seq-head">
+          <span class="seq-name">WebM 幀率</span>
+          <span class="info" tabindex="0" role="img" aria-label="WebM 幀率說明"
+                data-tip="每秒輸出幾幀。底層以 30fps 抽樣，故提供 30 / 15 / 10 / 6 / 5 這幾個整數倍率。降幀可減少檔案。">i</span>
+        </span>
+        <span class="seq-val" id="webmFpsVal">30fps</span>
+        <input type="range" id="webmFps" min="0" max="4" step="1" value="0">
       </div>
+      <div class="seq-row">
+        <span class="seq-head">
+          <span class="seq-name">壓縮 (CRF)</span>
+          <span class="info" tabindex="0" role="img" aria-label="WebM 壓縮說明"
+                data-tip="VP9 的固定品質值。數字越大檔案越小、畫面越糊；越小越清晰但檔案越大。約 30~36 是清晰度與大小的甜蜜點。">i</span>
+        </span>
+        <span class="seq-val"><span id="webmCrfVal">32</span> · <span id="webmCrfHint">較小</span></span>
+        <input type="range" id="webmCrf" min="16" max="48" step="1" value="32">
+      </div>
+    </div>
+
+    <div class="fmt-note">
+      WebM 由瀏覽器內的 <b>ffmpeg.wasm</b> 以 <b>VP9</b> 編碼，保留 alpha 通道並用
+      <b>CRF 固定品質</b>壓縮——是體積最小的透明影片格式，適合網頁、Chrome / Firefox / Edge。
+      首次使用需下載約 <b>30MB</b> 編碼器（與 MOV 共用，僅一次）。
+    </div>
+
+    <div class="output-group">
+      <div class="output-copy">
+        <div class="export-title">透明 WebM</div>
+        <div class="export-desc">網頁用，VP9 + alpha，體積最小</div>
+      </div>
+      <div class="est-bar" id="webmEst" aria-live="polite">
+        <span class="est-label">EST. WEBM SIZE</span>
+        <span class="est-value" id="webmEstVal">—</span>
+        <span class="est-note" id="webmEstNote">點「估算大小」取樣編碼</span>
+      </div>
+      <div class="controls">
+        <button class="btn-brand" id="processBtn" disabled>壓縮並匯出 .webm</button>
+        <button class="btn-outline" id="webmEstBtn" disabled>估算大小</button>
+        <button class="btn-outline" id="downloadBtn" disabled>下載 WebM</button>
+      </div>
+    </div>
+
     </div><!-- /tab webm -->
 
     <!-- ── TAB: MOV (ffmpeg.wasm · alpha-preserving QuickTime) ── -->

@@ -1,13 +1,16 @@
-// ── MOV exporter (ffmpeg.wasm) ─────────────────────────────
-// Encodes the keyed frames into a QuickTime .mov that preserves the alpha
-// channel — the format pro editors (Premiere / FCP / After Effects) ingest
-// cleanly, unlike alpha WebM.
+// ── ffmpeg.wasm exporters (MOV + compressed WebM) ──────────
+// Encodes the keyed frames into formats that preserve the alpha channel:
+//   • encodeMov  — QuickTime .mov (ProRes 4444 / qtrle) for pro editors
+//                  (Premiere / FCP / After Effects), which ingest alpha cleanly.
+//   • encodeWebm — VP9-alpha .webm with constant-quality CRF, the smallest
+//                  alpha output for the web (Chrome / Firefox / Edge).
 //
 // ffmpeg.wasm is heavy (~30 MB core) and unnecessary for the other formats, so
-// it is lazy-loaded from a pinned jsDelivr version only on first MOV export and
-// cached thereafter. We use the SINGLE-THREAD core on purpose: the multi-thread
-// build needs SharedArrayBuffer (COOP/COEP headers), which GitHub Pages can't
-// set. Single-thread is slower but it's the only variant that runs on the site.
+// it is lazy-loaded from a pinned jsDelivr version only on first MOV/WebM export
+// and cached thereafter (both exporters share one loaded instance). We use the
+// SINGLE-THREAD core on purpose: the multi-thread build needs SharedArrayBuffer
+// (COOP/COEP headers), which GitHub Pages can't set. Single-thread is slower but
+// it's the only variant that runs on the site.
 
 // Pinned, long-stable versions (all 0.12.x, published well over a year ago).
 // NOTE: the worker chunk is named `814.ffmpeg.js` for THIS exact wrapper
@@ -15,7 +18,7 @@
 // the package's dist/umd and update the classWorkerURL below to match.
 const FFMPEG_VER = '0.12.10';   // @ffmpeg/ffmpeg  (wrapper + worker)
 const UTIL_VER   = '0.12.1';    // @ffmpeg/util    (toBlobURL/fetchFile)
-const CORE_VER   = '0.12.6';    // @ffmpeg/core    (single-thread wasm)
+const CORE_VER   = '0.12.6';    // @ffmpeg/core    (single-thread wasm; ships libvpx → VP9)
 const CDN = 'https://cdn.jsdelivr.net/npm';
 
 let ffmpegPromise = null; // memoised loaded instance
@@ -61,12 +64,11 @@ async function getFFmpeg(onStatus) {
   return ffmpegPromise;
 }
 
-// ffmpeg args per codec. Both keep alpha; ProRes is the pro standard (large,
-// slow), qtrle (QuickTime Animation) is lossless RLE — smaller and faster.
-function buildArgs(codec, fps, pattern, out) {
-  const fr = String(fps);
-  // frames are written f00001.png… (1-based), so tell the image2 demuxer to start at 1
-  const input = ['-framerate', fr, '-start_number', '1', '-i', pattern];
+// ── ffmpeg arg builders (all keep alpha) ───────────────────
+// MOV: ProRes 4444 is the pro standard (large, slow); qtrle (QuickTime
+// Animation) is lossless RLE — smaller and faster.
+function buildMovArgs(codec, fps, pattern, out) {
+  const input = ['-framerate', String(fps), '-start_number', '1', '-i', pattern];
   if (codec === 'prores') {
     return [...input,
             '-c:v', 'prores_ks', '-profile:v', '4444', '-pix_fmt', 'yuva444p10le',
@@ -74,6 +76,17 @@ function buildArgs(codec, fps, pattern, out) {
   }
   // 'png' option → QuickTime Animation (qtrle), lossless with alpha
   return [...input, '-c:v', 'qtrle', '-pix_fmt', 'argb', out];
+}
+
+// WebM: VP9 with an alpha plane (yuva420p), constant-quality mode. `-b:v 0`
+// disables the target bitrate so `-crf` alone drives quality/size (higher CRF →
+// smaller, blurrier). `-auto-alt-ref 0` is REQUIRED — alt-ref frames corrupt the
+// alpha plane. `-row-mt 1` speeds up encode; `-an` drops the (absent) audio.
+function buildWebmArgs(crf, fps, pattern, out) {
+  return ['-framerate', String(fps), '-start_number', '1', '-i', pattern,
+          '-c:v', 'libvpx-vp9', '-pix_fmt', 'yuva420p',
+          '-b:v', '0', '-crf', String(crf),
+          '-row-mt', '1', '-auto-alt-ref', '0', '-an', out];
 }
 
 // Render one ImageData to a (optionally scaled) PNG blob via an offscreen canvas.
@@ -88,14 +101,16 @@ async function frameToPng(imgData, full, fullCtx, scaled, scaledCtx, gW, gH, doS
 }
 
 /**
- * Encode keyed frames to an alpha .mov blob.
+ * Shared encode path: rasterise the selected frames into ffmpeg's virtual FS
+ * (phase 1, 0–45%), run ffmpeg (phase 2, 45–100%), then clean up the FS.
  * @param {ImageData[]} frames  full-res keyed frames
- * @param {{scale:number, skip:number, fps:number, codec:'prores'|'png'}} opts
- * @param {{onStatus?:(msg:string)=>void, onProgress?:(ratio:number)=>void}} hooks
+ * @param {{scale:number, skip:number}} opts
+ * @param {{onStatus?:Function, onProgress?:Function}} hooks
+ * @param {{outName:string, mime:string, encLabel:string, buildArgs:(pattern:string,out:string)=>string[]}} spec
  * @returns {Promise<{blob:Blob, width:number, height:number, count:number}>}
  */
-export async function encodeMov(frames, opts, hooks = {}) {
-  const { scale, skip, fps, codec } = opts;
+async function encodeFrames(frames, opts, hooks, spec) {
+  const { scale, skip } = opts;
   const onStatus = hooks.onStatus || (() => {});
   const onProgress = hooks.onProgress || (() => {});
 
@@ -103,7 +118,7 @@ export async function encodeMov(frames, opts, hooks = {}) {
 
   const srcW = frames[0].width, srcH = frames[0].height;
   const doScale = scale !== 1;
-  // even dimensions keep encoders happy (ProRes/qtrle prefer it)
+  // even dimensions keep the encoders happy (VP9/ProRes/qtrle all prefer it)
   const gW = doScale ? Math.round(srcW * scale / 2) * 2 : srcW;
   const gH = doScale ? Math.round(srcH * scale / 2) * 2 : srcH;
 
@@ -113,6 +128,9 @@ export async function encodeMov(frames, opts, hooks = {}) {
   const scaled = document.createElement('canvas');
   scaled.width = gW; scaled.height = gH;
   const scaledCtx = scaled.getContext('2d');
+  // high-quality resampling on downscale (closest the canvas gets to Lanczos)
+  scaledCtx.imageSmoothingEnabled = true;
+  scaledCtx.imageSmoothingQuality = 'high';
 
   const indices = [];
   for (let i = 0; i < frames.length; i += skip) indices.push(i);
@@ -130,25 +148,24 @@ export async function encodeMov(frames, opts, hooks = {}) {
   }
 
   // Phase 2 (45–100%): run ffmpeg; map its progress event into the tail range.
-  onStatus(codec === 'prores' ? 'ffmpeg 編碼 ProRes 4444…' : 'ffmpeg 編碼 MOV…');
+  onStatus(spec.encLabel);
   const onFf = ({ progress }) => {
     if (progress >= 0 && progress <= 1) onProgress(0.45 + progress * 0.55);
   };
   ffmpeg.on('progress', onFf);
 
-  const out = 'out.mov';
   const pattern = `f%0${pad}d.png`;
   let blob;
   try {
-    await ffmpeg.exec(buildArgs(codec, fps, pattern, out));
-    const data = await ffmpeg.readFile(out);
-    blob = new Blob([data.buffer], { type: 'video/quicktime' });
+    await ffmpeg.exec(spec.buildArgs(pattern, spec.outName));
+    const data = await ffmpeg.readFile(spec.outName);
+    blob = new Blob([data.buffer], { type: spec.mime });
   } finally {
     ffmpeg.off('progress', onFf);
     // Tidy the virtual FS so repeat exports don't accumulate frames.
     try {
       for (let fi = 0; fi < indices.length; fi++) await ffmpeg.deleteFile(nameOf(fi));
-      await ffmpeg.deleteFile(out);
+      await ffmpeg.deleteFile(spec.outName);
     } catch (_) { /* best-effort cleanup */ }
   }
 
@@ -157,4 +174,66 @@ export async function encodeMov(frames, opts, hooks = {}) {
   }
   onProgress(1);
   return { blob, width: gW, height: gH, count: indices.length };
+}
+
+/**
+ * Encode keyed frames to an alpha .mov blob.
+ * @param {ImageData[]} frames  full-res keyed frames
+ * @param {{scale:number, skip:number, fps:number, codec:'prores'|'png'}} opts
+ * @param {{onStatus?:(msg:string)=>void, onProgress?:(ratio:number)=>void}} hooks
+ * @returns {Promise<{blob:Blob, width:number, height:number, count:number}>}
+ */
+export function encodeMov(frames, opts, hooks = {}) {
+  return encodeFrames(frames, opts, hooks, {
+    outName: 'out.mov',
+    mime: 'video/quicktime',
+    encLabel: opts.codec === 'prores' ? 'ffmpeg 編碼 ProRes 4444…' : 'ffmpeg 編碼 MOV…',
+    buildArgs: (pattern, out) => buildMovArgs(opts.codec, opts.fps, pattern, out),
+  });
+}
+
+/**
+ * Encode keyed frames to a compressed alpha .webm blob (VP9, constant-quality).
+ * @param {ImageData[]} frames  full-res keyed frames
+ * @param {{scale:number, skip:number, fps:number, crf:number}} opts
+ * @param {{onStatus?:(msg:string)=>void, onProgress?:(ratio:number)=>void}} hooks
+ * @returns {Promise<{blob:Blob, width:number, height:number, count:number}>}
+ */
+export function encodeWebm(frames, opts, hooks = {}) {
+  return encodeFrames(frames, opts, hooks, {
+    outName: 'out.webm',
+    mime: 'video/webm',
+    encLabel: `ffmpeg 編碼 VP9 WebM（CRF ${opts.crf}）…`,
+    buildArgs: (pattern, out) => buildWebmArgs(opts.crf, opts.fps, pattern, out),
+  });
+}
+
+/**
+ * Estimate the full WebM size by really encoding a CONSECUTIVE chunk and
+ * extrapolating by output-frame count. VP9 is inter-frame compressed, so (unlike
+ * the WebP muxer) a spread-out sample would wildly overestimate — we must encode
+ * a contiguous run of the actual output cadence to capture temporal compression.
+ * Taken from the middle of the clip (avoids any intro fade). A short sample is
+ * slightly keyframe-heavy, so it errs on the safe side (a touch high).
+ * @param {ImageData[]} frames  full-res keyed frames
+ * @param {{scale:number, skip:number, fps:number, crf:number}} opts
+ * @param {{onStatus?:Function, onProgress?:Function}} hooks
+ * @param {number} sampleOut  max output frames to encode for the sample
+ * @returns {Promise<{bytes:number, total:number, sampled:number}>}
+ */
+export async function estimateWebmBytes(frames, opts, hooks = {}, sampleOut = 24) {
+  const { scale, skip, fps, crf } = opts;
+  const outIdx = [];
+  for (let i = 0; i < frames.length; i += skip) outIdx.push(i);
+  const total = outIdx.length;
+  if (total === 0) return { bytes: 0, total: 0, sampled: 0 };
+
+  const win = Math.min(sampleOut, total);
+  const start = Math.max(0, Math.floor((total - win) / 2)); // centre window
+  const sub = outIdx.slice(start, start + win).map(i => frames[i]);
+
+  // Encode the pre-selected consecutive output frames as their own clip (skip:1).
+  const { blob } = await encodeWebm(sub, { scale, skip: 1, fps, crf }, hooks);
+  const bytes = Math.round(blob.size * total / win);
+  return { bytes, total, sampled: win };
 }

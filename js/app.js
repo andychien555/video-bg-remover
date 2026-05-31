@@ -3,7 +3,7 @@ import { hexToRgb, applyKey, analyzeResidue, toAlphaView, RESIDUE_COLOR } from '
 import { encodeAnimatedWebP, estimateWebpBytes } from './webp-anim.js';
 import { encodeAnimatedGif, estimateGifBytes } from './gif-anim.js';
 import { extractFrames, estimateMemoryBytes } from './pipeline.js';
-import { encodeMov } from './mov-encoder.js';
+import { encodeMov, encodeWebm, estimateWebmBytes } from './mov-encoder.js';
 
 // ── Constants ──────────────────────────────────────────────
 const FPS = 30;
@@ -74,6 +74,11 @@ const el = {
   pngEstNote: $('pngEstNote'),
   webmEstVal: $('webmEstVal'),
   webmEstNote: $('webmEstNote'),
+  webmScale: $('webmScale'),
+  webmWidthInput: $('webmWidthInput'),
+  webmFps: $('webmFps'),
+  webmCrf: $('webmCrf'),
+  webmEstBtn: $('webmEstBtn'),
   tabSizeImage: $('tabSizeImage'),
   tabSizeGif: $('tabSizeGif'),
   tabSizeWebm: $('tabSizeWebm'),
@@ -103,6 +108,9 @@ let zipBlob = null;      // png sequence zip
 let webpBlob = null;     // animated webp
 let gifBlob = null;      // animated gif
 let movBlob = null;      // alpha QuickTime (.mov, via ffmpeg.wasm)
+let webmEstBytes = null; // last known WebM size (sample estimate or real export)
+let webmEstKey = '';     // settings fingerprint the size was computed for (stale check)
+let webmEstExact = false;// true if webmEstBytes came from a real export, not a sample
 let processedFrames = [];
 let previewIdx = 0;
 let isPlaying = false;
@@ -161,6 +169,7 @@ function handleFile(file) {
   el.progWrap.style.display = 'none';
   el.previewBar.style.display = 'none';
   outputBlob = zipBlob = webpBlob = gifBlob = movBlob = null;
+  webmEstBytes = null; webmEstKey = ''; webmEstExact = false;
   el.downloadBtn.disabled = true;
   el.downloadZipBtn.disabled = true;
   el.downloadWebpBtn.disabled = true;
@@ -195,6 +204,7 @@ function handleFile(file) {
     el.frameLabel.textContent = `1 / ${n}`;
     el.srcMeta.textContent = `${el.video.videoWidth}×${el.video.videoHeight} · ${el.video.duration.toFixed(2)}s · ${FPS}fps`;
     el.processBtn.disabled = false;
+    el.webmEstBtn.disabled = false;
     el.pngSeqBtn.disabled = false;
     el.webpBtn.disabled = false;
     el.gifBtn.disabled = false;
@@ -294,6 +304,18 @@ function getGifParams() {
   };
 }
 
+// WebM has its own width / fps / CRF (compression). VP9-alpha via ffmpeg.wasm.
+function getWebmParams() {
+  const srcW = el.video.videoWidth;
+  const scale = srcW ? parseInt(el.webmScale.value) / srcW : 1;
+  return {
+    scale,
+    skip: Math.round(FPS / FPS_PRESETS[parseInt(el.webmFps.value)]),
+    fps: FPS_PRESETS[parseInt(el.webmFps.value)],
+    crf: parseInt(el.webmCrf.value),
+  };
+}
+
 // MOV has its own width / fps / codec, like GIF.
 function getMovParams() {
   const srcW = el.video.videoWidth;
@@ -309,7 +331,8 @@ function getMovParams() {
 // Configure width controls against the loaded video: cap at source width (no upscaling)
 function configureWidthSlider(srcW) {
   const minW = Math.min(64, srcW);
-  [el.seqScale, el.seqWidthInput, el.gifScale, el.gifWidthInput, el.movScale, el.movWidthInput]
+  [el.seqScale, el.seqWidthInput, el.gifScale, el.gifWidthInput,
+   el.movScale, el.movWidthInput, el.webmScale, el.webmWidthInput]
     .forEach(c => { c.min = minW; c.max = srcW; c.step = 2; });
   el.seqScale.value = srcW;
   el.seqWidthInput.value = srcW;   // default = original size (100%)
@@ -320,6 +343,9 @@ function configureWidthSlider(srcW) {
   // MOV defaults to full size (it's the pro/editing output).
   el.movScale.value = srcW;
   el.movWidthInput.value = srcW;
+  // WebM defaults to full size; CRF does the size work, not downscaling.
+  el.webmScale.value = srcW;
+  el.webmWidthInput.value = srcW;
   updateHeightHint();
 }
 // derive height from the current width + source aspect ratio
@@ -333,6 +359,9 @@ function updateHeightHint() {
     : '—';
   $('movHeightVal').textContent = srcW
     ? Math.round(srcH * parseInt(el.movScale.value) / srcW)
+    : '—';
+  $('webmHeightVal').textContent = srcW
+    ? Math.round(srcH * parseInt(el.webmScale.value) / srcW)
     : '—';
 }
 // slider moved → mirror into the number field (shared by WebP + GIF width rows)
@@ -534,40 +563,25 @@ async function runFrames() {
   scheduleEstimate(); // now have real keyed frames → tighter estimate
 }
 
-// ── Export 1: transparent WebM (MediaRecorder) ─────────────
-async function runProcess() {
-  await runFrames();
+// ── Export 1: compressed transparent WebM (ffmpeg.wasm · VP9 + CRF) ─
+async function runWebm() {
+  const params = getWebmParams();
+  el.progWrap.style.display = 'block';
+  el.prog.value = 0;
+  el.progLabel.textContent = 'WebM 準備中…';
 
-  el.prog.value = 60;
-  el.progLabel.textContent = '第二步：以精確 30fps 泵入 MediaRecorder…';
-  await new Promise(r => setTimeout(r, 30));
+  const { blob, width, height, count } = await encodeWebm(processedFrames, params, {
+    onStatus: msg => { el.progLabel.textContent = msg; },
+    onProgress: ratio => { el.prog.value = Math.round(ratio * 100); },
+  });
 
-  const stream = el.workCanvas.captureStream(FPS);
-  const mimeType = MediaRecorder.isTypeSupported('video/webm;codecs=vp9')
-    ? 'video/webm;codecs=vp9' : 'video/webm';
-  const recorder = new MediaRecorder(stream, { mimeType, videoBitsPerSecond: 10_000_000 });
-  const chunks = [];
-  recorder.ondataavailable = e => { if (e.data.size > 0) chunks.push(e.data); };
-  const recordDone = new Promise(resolve => { recorder.onstop = resolve; });
-  recorder.start();
-
-  const msPerFrame = 1000 / FPS;
-  for (let f = 0; f < processedFrames.length; f++) {
-    const startT = performance.now();
-    workCtx.putImageData(processedFrames[f], 0, 0);
-    const wait = Math.max(0, msPerFrame - (performance.now() - startT));
-    await new Promise(r => setTimeout(r, wait));
-    const pct = 60 + Math.round((f / processedFrames.length) * 39);
-    el.prog.value = pct;
-    el.progLabel.textContent = `錄製中 ${f + 1} / ${processedFrames.length}（${pct}%）`;
-  }
-
-  recorder.stop();
-  await recordDone;
-
-  outputBlob = new Blob(chunks, { type: 'video/webm' });
+  outputBlob = blob;
   el.prog.value = 100;
-  showFeedback('success', `透明 WebM 完成 · ${processedFrames.length} 幀 @ ${FPS}fps`);
+  showFeedback('success', `透明 WebM 完成 · VP9 CRF ${params.crf} · ${count} 幀 · ${width}×${height} · ${formatSize(blob.size)}`);
+  // CRF size is content-dependent (no formula); record the REAL size as the
+  // current estimate so the bar/badge show it (and stay fresh for these settings).
+  webmEstBytes = blob.size; webmEstKey = webmKey().key; webmEstExact = true;
+  setEstimate(el.webmEstVal, el.tabSizeWebm, '≈ ' + formatSizeMB(blob.size));
   el.downloadBtn.disabled = false;
 }
 
@@ -575,11 +589,37 @@ el.processBtn.addEventListener('click', async () => {
   stopPlayback();
   setBusy(true);
   outputBlob = null;
-  try { await runProcess(); }
-  catch (e) { reportError('錯誤：', e); }
+  el.downloadBtn.disabled = true;
+  try {
+    if (!processedFrames.length) await runFrames();
+    await runWebm();
+  } catch (e) { reportError('WebM 錯誤：', e); }
   setBusy(false);
 });
 el.downloadBtn.addEventListener('click', () => { if (outputBlob) triggerDownload(outputBlob, `${baseName}-nobg.webm`); });
+
+// Estimate the WebM size by sample-encoding a consecutive chunk (VP9 is
+// inter-frame compressed, so no formula — see estimateWebmBytes). Needs keyed
+// frames + the ffmpeg core (shared with MOV), hence it's an explicit action.
+el.webmEstBtn.addEventListener('click', async () => {
+  stopPlayback();
+  setBusy(true);
+  try {
+    if (!processedFrames.length) await runFrames();
+    const params = getWebmParams();
+    el.progWrap.style.display = 'block';
+    el.prog.value = 0;
+    el.progLabel.textContent = 'WebM 取樣估算中…';
+    const { bytes, total, sampled } = await estimateWebmBytes(processedFrames, params, {
+      onStatus: msg => { el.progLabel.textContent = msg; },
+      onProgress: ratio => { el.prog.value = Math.round(ratio * 100); },
+    });
+    webmEstBytes = bytes; webmEstKey = webmKey().key; webmEstExact = false;
+    setEstimate(el.webmEstVal, el.tabSizeWebm, '≈ ' + formatSizeMB(bytes));
+    showFeedback('info', `WebM 估算 ≈ ${formatSizeMB(bytes)}（取樣 ${sampled}/${total} 幀外插 · CRF ${params.crf}）`);
+  } catch (e) { reportError('WebM 估算錯誤：', e); }
+  setBusy(false);
+});
 
 // ── Export 1b: transparent MOV (ffmpeg.wasm) ───────────────
 async function runMov() {
@@ -790,6 +830,32 @@ function syncMovWidthFromInput(writeBack) {
   scheduleEstimate();
 }
 
+// ── WebM option labels (VP9 + CRF; no live formula — CRF size is only known
+// after the ffmpeg encode, like qtrle) ────────────────────
+el.webmScale.addEventListener('input', () => { el.webmWidthInput.value = el.webmScale.value; updateHeightHint(); scheduleEstimate(); });
+el.webmWidthInput.addEventListener('input', () => syncWebmWidthFromInput(false));
+el.webmWidthInput.addEventListener('change', () => syncWebmWidthFromInput(true));
+el.webmFps.addEventListener('input', e => { $('webmFpsVal').textContent = FPS_PRESETS[parseInt(e.target.value)] + 'fps'; scheduleEstimate(); });
+el.webmCrf.addEventListener('input', e => {
+  const crf = parseInt(e.target.value);
+  $('webmCrfVal').textContent = crf;
+  // hint which way the trade-off leans at the current value
+  $('webmCrfHint').textContent = crf <= 26 ? '較清晰' : crf >= 38 ? '更小' : '較小';
+  scheduleEstimate();
+});
+function syncWebmWidthFromInput(writeBack) {
+  const srcW = el.video.videoWidth;
+  if (!srcW) return;
+  let w = parseInt(el.webmWidthInput.value);
+  if (isNaN(w)) { if (writeBack) el.webmWidthInput.value = el.webmScale.value; return; }
+  const minW = parseInt(el.webmScale.min), maxW = parseInt(el.webmScale.max);
+  w = Math.max(minW, Math.min(maxW, Math.round(w / 2) * 2));
+  el.webmScale.value = w;
+  if (writeBack) el.webmWidthInput.value = w;
+  updateHeightHint();
+  scheduleEstimate();
+}
+
 // ── Export format tabs (WebP/PNG · GIF · WebM · MOV) ───────
 // Each tab reveals only its settings group; estimates keep running for all
 // formats in the background, so the size badges + each panel stay current.
@@ -842,6 +908,7 @@ function setBusy(running) {
   busy = running;
   if (running) hideFeedback(); // drop any prior feedback when a new run starts
   el.processBtn.disabled = running;
+  el.webmEstBtn.disabled = running;
   el.pngSeqBtn.disabled = running;
   el.webpBtn.disabled = running;
   el.gifBtn.disabled = running;
@@ -906,7 +973,7 @@ function updateEstimates() {
   updateWebpEstimate(frames, sourceTotal, sampled);   // → WebP bar + image tab badge
   updatePngEstimate(frames, sourceTotal, sampled);    // → PNG/ZIP bar
   updateGifEstimate(frames, sourceTotal, sampled);    // → GIF bar + GIF tab badge
-  updateWebmEstimate();                               // → WebM bar + WebM tab badge (duration-only)
+  updateWebmEstimate(sourceTotal);                    // → WebM bar + WebM tab badge (post-encode size)
   updateMovEstimate(sourceTotal);                     // → MOV bar + MOV tab badge (ProRes formula)
 }
 
@@ -998,14 +1065,42 @@ async function updateGifEstimate(sampleFrames, sourceTotal, sampled) {
   }
 }
 
-// WebM records the full clip at source size · 30fps · a fixed 10 Mbps target,
-// so its size depends only on duration (no settings, no sampling needed).
-function updateWebmEstimate() {
-  const dur = el.video.duration || 0;
-  if (!dur) { setEstimate(el.webmEstVal, el.tabSizeWebm, '—'); return; }
-  const bytes = Math.round((10_000_000 / 8) * dur); // 10 Mbps target → bytes
-  setEstimate(el.webmEstVal, el.tabSizeWebm, '≈ ' + formatSizeMB(bytes));
-  el.webmEstNote.textContent = `${Math.ceil(dur * FPS)} 幀 · 固定 10Mbps 上限估算`;
+// Fingerprint the settings that affect WebM size (used to tell a fresh estimate
+// from a stale one after the user tweaks width / fps / CRF).
+function webmKey() {
+  const srcW = el.video.videoWidth, srcH = el.video.videoHeight;
+  const { scale, skip, crf } = getWebmParams();
+  const gW = Math.round(srcW * scale / 2) * 2, gH = Math.round(srcH * scale / 2) * 2;
+  return { key: `${gW}x${gH}|${skip}|${crf}`, gW, gH, crf };
+}
+
+// WebM is VP9 with constant-quality CRF: size is wildly content-dependent (no
+// reliable formula, just like qtrle), so there's no live formula. We show the
+// last sample-encode/real size, greyed out if the settings changed since.
+function updateWebmEstimate(sourceTotal) {
+  const srcW = el.video.videoWidth;
+  if (!srcW) { setEstimate(el.webmEstVal, el.tabSizeWebm, '—'); return; }
+  const { key, gW, gH, crf } = webmKey();
+  const { skip } = getWebmParams();
+  const frameCount = Math.max(1, Math.ceil(sourceTotal / skip));
+
+  if (webmEstBytes == null) {                 // never estimated yet
+    setEstimate(el.webmEstVal, el.tabSizeWebm, '—');
+    el.webmEstNote.textContent = `${frameCount} 幀 · ${gW}×${gH} · CRF ${crf} · 點「估算大小」`;
+    return;
+  }
+  const text = '≈ ' + formatSizeMB(webmEstBytes);
+  if (key === webmEstKey) {                    // estimate matches current settings
+    setEstimate(el.webmEstVal, el.tabSizeWebm, text);
+    el.webmEstNote.textContent = webmEstExact
+      ? `${frameCount} 幀 · ${gW}×${gH} · 實際大小`
+      : `${frameCount} 幀 · ${gW}×${gH} · CRF ${crf} · 取樣估算`;
+  } else {                                     // settings changed → grey it out
+    el.webmEstVal.textContent = text;
+    el.tabSizeWebm.textContent = text;
+    markStale(el.webmEstVal, el.tabSizeWebm);
+    el.webmEstNote.textContent = '設定已變，點「估算大小」更新';
+  }
 }
 
 // Estimate the PNG-sequence ZIP size: encode a few representative frames to PNG
