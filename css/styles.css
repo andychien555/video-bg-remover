@@ -17,13 +17,20 @@
   --line:        oklch(1 0 0 / 0.075);
   --line-strong: oklch(1 0 0 / 0.14);
 
-  /* ── Brand accent (indigo, hue-aligned to the cool 265 surfaces) ──
-     used on primary CTAs, the brand mark, and hero checkmarks. */
-  --brand:        oklch(0.58 0.19 274);
-  --brand-hover:  oklch(0.64 0.19 274);
-  --brand-ink:    oklch(0.99 0 0);          /* text on a brand fill */
-  --brand-bright: oklch(0.74 0.15 274);     /* brand as icon/text on dark */
-  --brand-soft:   oklch(0.58 0.19 274 / 0.16);
+  /* ── Interaction overlays + transparency checker (themed) ── */
+  --hover:       oklch(1 0 0 / 0.04);
+  --hover-soft:  oklch(1 0 0 / 0.012);
+  --focus-ring:  oklch(1 0 0 / 0.10);
+  --checker-a:   oklch(0.26 0.004 265);
+  --checker-b:   oklch(0.2 0.004 265);
+  --ink-ok:      oklch(0.82 0.16 155);   /* residue clean (green) */
+  --ink-warn:    oklch(0.82 0.16 75);    /* residue present (amber) */
+
+  /* ── Brand accent (bright yellow) — primary CTAs, brand mark, hero checks.
+     Yellow is light, so text/icons on a brand fill must be dark (--brand-ink). */
+  --brand:        oklch(0.86 0.175 96);
+  --brand-hover:  oklch(0.80 0.175 96);
+  --brand-ink:    oklch(0.22 0.03 96);      /* dark ink on a brand fill */
 
   /* ── Status accents (the only hues — reserved for terminal feedback) ── */
   --success:      oklch(0.74 0.13 152);
@@ -55,9 +62,47 @@
   --ease: cubic-bezier(0.22, 1, 0.36, 1);
 }
 
+/* ── Light theme ── overrides surfaces/ink/overlays only; the yellow brand,
+   geometry, and fonts stay shared. Toggled via html[data-theme]. */
+html[data-theme="light"] {
+  --bg:         oklch(0.985 0.003 265);
+  --bg-grid:    oklch(0 0 0 / 0.035);
+  --surface:    oklch(1 0 0);
+  --surface-2:  oklch(0.965 0.003 265);
+  --inset:      oklch(0.955 0.004 265);
+
+  --line:        oklch(0 0 0 / 0.10);
+  --line-strong: oklch(0 0 0 / 0.20);
+
+  --hover:       oklch(0 0 0 / 0.05);
+  --hover-soft:  oklch(0 0 0 / 0.025);
+  --focus-ring:  oklch(0 0 0 / 0.12);
+  --checker-a:   oklch(0.93 0.003 265);
+  --checker-b:   oklch(0.86 0.003 265);
+  --ink-ok:      oklch(0.52 0.15 155);
+  --ink-warn:    oklch(0.56 0.15 70);
+
+  /* darker status hues stay legible on light surfaces */
+  --success:      oklch(0.54 0.13 152);
+  --success-bg:   oklch(0.54 0.13 152 / 0.12);
+  --success-line: oklch(0.54 0.13 152 / 0.40);
+  --danger:       oklch(0.55 0.19 25);
+  --danger-bg:    oklch(0.55 0.19 25 / 0.10);
+  --danger-line:  oklch(0.55 0.19 25 / 0.40);
+
+  --text:    oklch(0.24 0.01 265);
+  --text-2:  oklch(0.42 0.01 265);
+  --text-3:  oklch(0.54 0.008 265);
+  --text-4:  oklch(0.62 0.006 265);
+}
+
 * { box-sizing: border-box; margin: 0; padding: 0; }
 
 html { -webkit-text-size-adjust: 100%; }
+/* smooth the theme switch on the big surfaces */
+body, .panel, .output-group, .seq-opts, .est-bar, button, .theme-toggle {
+  transition: background-color .2s var(--ease), border-color .2s var(--ease), color .2s var(--ease);
+}
 
 body {
   font-family: var(--sans);
@@ -100,12 +145,25 @@ body {
 .brand { display: flex; align-items: center; gap: var(--s-2); }
 .brand-mark {
   width: 14px; height: 14px; border-radius: 50%;
-  border: 1.5px solid var(--brand-bright);
-  background: linear-gradient(90deg, var(--brand-bright) 0 50%, transparent 50% 100%);
+  border: 1.5px solid var(--brand);
+  background: linear-gradient(90deg, var(--brand) 0 50%, transparent 50% 100%);
 }
 .brand-name {
   font-size: 15px; font-weight: 600; letter-spacing: -0.01em;
 }
+/* light/dark theme toggle — shows the current theme's icon */
+.theme-toggle {
+  display: inline-grid; place-items: center;
+  width: 36px; height: 36px; padding: 0;
+  background: var(--surface-2); border: 1px solid var(--line);
+  border-radius: var(--r-sm); color: var(--text-2); cursor: pointer;
+}
+.theme-toggle:hover { color: var(--text); border-color: var(--line-strong); }
+.theme-toggle svg { width: 17px; height: 17px; display: block; }
+.theme-toggle .icon-sun { display: none; }
+.theme-toggle .icon-moon { display: block; }
+html[data-theme="light"] .theme-toggle .icon-sun { display: block; }
+html[data-theme="light"] .theme-toggle .icon-moon { display: none; }
 
 /* ── Shell ─────────────────────────────────────────────── */
 .shell {
@@ -144,7 +202,7 @@ body {
 .hero-points .check {
   display: inline-grid; place-items: center; flex-shrink: 0;
   width: 20px; height: 20px; border-radius: 50%;
-  background: var(--brand-soft); color: var(--brand-bright);
+  background: var(--brand); color: var(--brand-ink);
   font-size: 12px; font-weight: 700;
 }
 @media (max-width: 720px) {
@@ -190,10 +248,10 @@ body {
   color: var(--text-2);
   transition: border-color .25s var(--ease), background .25s var(--ease);
 }
-.upload-area:hover { border-color: var(--text-3); background: oklch(1 0 0 / 0.012); }
+.upload-area:hover { border-color: var(--text-3); background: var(--hover-soft); }
 .upload-area.dragover {
   border-color: var(--text); border-style: solid;
-  background: oklch(1 0 0 / 0.04);
+  background: var(--hover);
 }
 .upload-area input { display: none; }
 .upload-area strong { font-weight: 500; font-size: 14px; color: var(--text); }
@@ -298,8 +356,8 @@ body {
   cursor: help; white-space: nowrap;
 }
 #residueVal { color: var(--text-3); }
-#residueVal.clean { color: oklch(0.82 0.16 155); }   /* green = clean */
-#residueVal.dirty { color: oklch(0.82 0.16 75); }    /* amber = residue */
+#residueVal.clean { color: var(--ink-ok); }     /* green = clean */
+#residueVal.dirty { color: var(--ink-warn); }   /* amber = residue */
 .vp-hint {
   padding: 8px var(--s-3); font-size: 11px; color: var(--text-4);
   line-height: 1.5; border-top: 1px solid var(--line);
@@ -324,14 +382,14 @@ canvas { width: 100%; display: block; }
 .vp-drop input { display: none; }
 .vp-drop strong { font-weight: 500; font-size: 14px; color: var(--text); }
 .vp-drop p { font-size: 12px; color: var(--text-4); }
-#dropZone:hover .vp-drop { background: oklch(1 0 0 / 0.012); }
+#dropZone:hover .vp-drop { background: var(--hover-soft); }
 #dropZone.dragover { border-color: var(--text); }
-#dropZone.dragover .vp-drop { background: oklch(1 0 0 / 0.04); }
+#dropZone.dragover .vp-drop { background: var(--hover); }
 /* once a video is loaded, hide the prompt and reveal the frame */
 #dropZone.has-media .vp-drop { display: none; }
 #outCanvas {
   background:
-    repeating-conic-gradient(oklch(0.26 0.004 265) 0% 25%, oklch(0.2 0.004 265) 0% 50%)
+    repeating-conic-gradient(var(--checker-a) 0% 25%, var(--checker-b) 0% 50%)
     0 0 / 18px 18px;
 }
 
@@ -370,7 +428,7 @@ canvas { width: 100%; display: block; }
   white-space: nowrap; user-select: none;
 }
 .tab:hover { color: var(--text-2); }
-.tab.active { background: var(--surface-2); color: var(--text); box-shadow: 0 1px 0 oklch(0 0 0 / 0.3); }
+.tab.active { background: #fff; color: oklch(0.24 0.01 265); box-shadow: 0 1px 3px oklch(0 0 0 / 0.25); }
 
 /* ── Chroma color row ──────────────────────────────────── */
 .color-row {
@@ -436,7 +494,7 @@ input[type=range]::-moz-range-thumb {
 input[type=range]:hover::-webkit-slider-thumb { transform: scale(1.12); }
 input[type=range]:focus-visible { outline: none; }
 input[type=range]:focus-visible::-webkit-slider-thumb {
-  box-shadow: 0 0 0 1px var(--text), 0 0 0 4px oklch(1 0 0 / 0.12);
+  box-shadow: 0 0 0 1px var(--text), 0 0 0 4px var(--focus-ring);
 }
 
 /* ── Export rows ───────────────────────────────────────── */
@@ -508,7 +566,7 @@ input[type=range]:focus-visible::-webkit-slider-thumb {
 }
 .num-input:focus-visible {
   outline: none; border-color: var(--text);
-  box-shadow: 0 0 0 3px oklch(1 0 0 / 0.08);
+  box-shadow: 0 0 0 3px var(--focus-ring);
 }
 .num-input::-webkit-outer-spin-button,
 .num-input::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
@@ -571,14 +629,14 @@ input[type=range]:focus-visible::-webkit-slider-thumb {
   transition: color .15s var(--ease), background .15s var(--ease);
 }
 .etab:hover { color: var(--text-2); }
-.etab.active { background: var(--surface-2); color: var(--text); box-shadow: 0 1px 0 oklch(0 0 0 / 0.3); }
+.etab.active { background: #fff; color: oklch(0.24 0.01 265); box-shadow: 0 1px 3px oklch(0 0 0 / 0.25); }
 .etab:focus-visible { outline: 2px solid var(--text); outline-offset: 2px; }
 .etab-name { font-size: 13.5px; font-weight: 500; white-space: nowrap; }
 .etab-size {
   font-family: var(--mono); font-feature-settings: "tnum" 1;
   font-size: 11.5px; color: var(--text-4); letter-spacing: -0.01em;
 }
-.etab.active .etab-size { color: var(--text-3); }
+.etab.active .etab-size { color: oklch(0.45 0.01 265); }
 .etab-size.is-stale { opacity: 0.45; }
 
 /* WebM tab: explanatory note in place of sliders */
@@ -637,7 +695,7 @@ button:disabled { cursor: not-allowed; }
 .btn-brand:disabled { background: var(--surface-2); color: var(--text-4); border-color: var(--line); }
 
 .btn-outline { background: transparent; color: var(--text); border-color: var(--line-strong); }
-.btn-outline:hover:not(:disabled) { border-color: var(--text); background: oklch(1 0 0 / 0.03); }
+.btn-outline:hover:not(:disabled) { border-color: var(--text); background: var(--hover); }
 .btn-outline:disabled { color: var(--text-4); border-color: var(--line); opacity: 0.7; }
 
 .btn-ghost { background: var(--surface-2); color: var(--text-2); border-color: var(--line); }

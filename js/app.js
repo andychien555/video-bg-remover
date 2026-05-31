@@ -78,6 +78,7 @@ const el = {
   alphaBadge: $('alphaBadge'),
   residueVal: $('residueVal'),
   residueToggle: $('residueToggle'),
+  themeToggle: $('themeToggle'),
 };
 const srcCtx = el.srcCanvas.getContext('2d', { willReadFrequently: true });
 const outCtx = el.outCanvas.getContext('2d');
@@ -102,6 +103,15 @@ let gifEstToken = 0;       // same staleness guard for the independent GIF estim
 let pngEstToken = 0;       // …and for the PNG/ZIP estimate
 let alphaView = false;     // ALPHA badge toggles the alpha-matte preview
 let highlightOn = false;   // 殘留 switch: persistently highlight residue pixels
+
+// ── Theme toggle ───────────────────────────────────────────
+// initial data-theme is set by the inline <head> script (no-FOUC); here we
+// just flip + persist the user's choice on click.
+el.themeToggle.addEventListener('click', () => {
+  const next = document.documentElement.dataset.theme === 'light' ? 'dark' : 'light';
+  document.documentElement.dataset.theme = next;
+  try { localStorage.setItem('theme', next); } catch (e) { /* private mode: skip persist */ }
+});
 
 // ── Mode tabs ──────────────────────────────────────────────
 document.querySelectorAll('.tab').forEach(tab => {
