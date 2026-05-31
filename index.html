@@ -59,8 +59,13 @@
         <span class="vp-label">原始幀 · SOURCE<span class="vp-dims" id="srcMeta"></span></span>
         <span class="vp-meta" id="coordHint"></span>
       </div>
-      <!-- invisible twin of the OUTPUT hint: keeps both stages vertically aligned at any width -->
-      <p class="vp-hint vp-hint-ghost" aria-hidden="true">打開「<b>殘留</b>」開關會持續以<span class="hl-chip">螢光色</span>標出殘留像素；點右上 <b>ALPHA</b> 可切到遮罩檢視（純黑＝完全透明）。</p>
+      <!-- second row: mirrors the OUTPUT hint's height (invisible ghost text) so the
+           stages stay aligned, and hosts the "換影片" re-upload button once a clip loads -->
+      <div class="vp-subbar-src">
+        <span class="vp-subbar-ghost" aria-hidden="true">打開「殘留」開關會持續以螢光色標出殘留像素；點右上 ALPHA 可切到遮罩檢視（純黑＝完全透明）。</span>
+        <button class="vp-reupload" id="reuploadBtn" type="button"
+                title="上傳其他影片（重新上傳）">↑ 上傳其他影片</button>
+      </div>
       <div class="vp-stage">
         <canvas id="srcCanvas" width="480" height="270" style="cursor:crosshair"></canvas>
         <div class="vp-drop" id="dropPrompt">

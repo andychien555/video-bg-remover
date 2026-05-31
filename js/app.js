@@ -21,6 +21,7 @@ const el = {
   fileInput: $('fileInput'),
   dropZone: $('dropZone'),
   dropPrompt: $('dropPrompt'),
+  reuploadBtn: $('reuploadBtn'),
   processBtn: $('processBtn'),
   downloadBtn: $('downloadBtn'),
   pngSeqBtn: $('pngSeqBtn'),
@@ -142,6 +143,9 @@ document.querySelectorAll('.tab').forEach(tab => {
 // ── Upload ─────────────────────────────────────────────────
 // click the prompt (not the whole stage) so picking color on a loaded frame still works
 el.dropPrompt.addEventListener('click', () => el.fileInput.click());
+// "上傳其他影片" in the SOURCE second row (visible once a clip is loaded) → pick a
+// replacement. Clear value first so re-selecting the same filename still fires `change`.
+el.reuploadBtn.addEventListener('click', () => { el.fileInput.value = ''; el.fileInput.click(); });
 el.dropZone.addEventListener('dragover', e => { e.preventDefault(); el.dropZone.classList.add('dragover'); });
 el.dropZone.addEventListener('dragleave', () => el.dropZone.classList.remove('dragover'));
 el.dropZone.addEventListener('drop', e => { e.preventDefault(); el.dropZone.classList.remove('dragover'); handleFile(e.dataTransfer.files[0]); });
