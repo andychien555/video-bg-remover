@@ -83,6 +83,8 @@ const el = {
   movCodec: $('movCodec'),
   movBtn: $('movBtn'),
   downloadMovBtn: $('downloadMovBtn'),
+  movEstVal: $('movEstVal'),
+  movEstNote: $('movEstNote'),
   alphaBadge: $('alphaBadge'),
   residueVal: $('residueVal'),
   residueToggle: $('residueToggle'),
@@ -168,6 +170,8 @@ function handleFile(file) {
   el.pngEstNote.textContent = '估算中…';
   el.webmEstVal.textContent = '—';
   el.webmEstNote.textContent = '估算中…';
+  el.movEstVal.textContent = '—';
+  el.movEstNote.textContent = '估算中…';
   el.tabSizeImage.textContent = el.tabSizeGif.textContent = el.tabSizeWebm.textContent = el.tabSizeMov.textContent = '—';
   el.video.src = URL.createObjectURL(file);
   el.video.addEventListener('loadedmetadata', () => {
@@ -589,7 +593,8 @@ async function runMov() {
   el.prog.value = 100;
   const codecName = params.codec === 'prores' ? 'ProRes 4444' : 'QuickTime Animation';
   showFeedback('success', `透明 MOV 完成 · ${codecName} · ${count} 幀 · ${width}×${height} · ${formatSize(blob.size)}`);
-  el.tabSizeMov.textContent = '≈ ' + formatSizeMB(blob.size);
+  // qtrle has no formula estimate, so surface the real size in its badge once known.
+  if (params.codec !== 'prores') setEstimate(el.movEstVal, el.tabSizeMov, formatSizeMB(blob.size));
   el.downloadMovBtn.disabled = false;
 }
 
@@ -763,10 +768,11 @@ el.gifTransparent.addEventListener('change', () => {
 
 // ── MOV option labels (independent settings; no live estimate — size is
 // only known after the ffmpeg encode) ─────────────────────
-el.movScale.addEventListener('input', () => { el.movWidthInput.value = el.movScale.value; updateHeightHint(); });
+el.movScale.addEventListener('input', () => { el.movWidthInput.value = el.movScale.value; updateHeightHint(); scheduleEstimate(); });
 el.movWidthInput.addEventListener('input', () => syncMovWidthFromInput(false));
 el.movWidthInput.addEventListener('change', () => syncMovWidthFromInput(true));
-el.movFps.addEventListener('input', e => { $('movFpsVal').textContent = FPS_PRESETS[parseInt(e.target.value)] + 'fps'; });
+el.movFps.addEventListener('input', e => { $('movFpsVal').textContent = FPS_PRESETS[parseInt(e.target.value)] + 'fps'; scheduleEstimate(); });
+el.movCodec.addEventListener('change', scheduleEstimate);
 function syncMovWidthFromInput(writeBack) {
   const srcW = el.video.videoWidth;
   if (!srcW) return;
@@ -777,6 +783,7 @@ function syncMovWidthFromInput(writeBack) {
   el.movScale.value = w;
   if (writeBack) el.movWidthInput.value = w;
   updateHeightHint();
+  scheduleEstimate();
 }
 
 // ── Export format tabs (WebP/PNG · GIF · WebM · MOV) ───────
@@ -886,8 +893,8 @@ function getSampleFrames() {
 function updateEstimates() {
   if (busy) return;                       // don't compete with a running export
   if (!el.srcCanvas.width) {
-    for (const v of [el.webpEstVal, el.gifEstVal, el.pngEstVal, el.webmEstVal,
-                     el.tabSizeImage, el.tabSizeGif, el.tabSizeWebm]) v.textContent = '—';
+    for (const v of [el.webpEstVal, el.gifEstVal, el.pngEstVal, el.webmEstVal, el.movEstVal,
+                     el.tabSizeImage, el.tabSizeGif, el.tabSizeWebm, el.tabSizeMov]) v.textContent = '—';
     return;
   }
   const { frames, sourceTotal } = getSampleFrames();
@@ -896,6 +903,29 @@ function updateEstimates() {
   updatePngEstimate(frames, sourceTotal, sampled);    // → PNG/ZIP bar
   updateGifEstimate(frames, sourceTotal, sampled);    // → GIF bar + GIF tab badge
   updateWebmEstimate();                               // → WebM bar + WebM tab badge (duration-only)
+  updateMovEstimate(sourceTotal);                     // → MOV bar + MOV tab badge (ProRes formula)
+}
+
+// ProRes 4444 has a near-constant data rate (~330 Mbps at 1920×1080·30fps ≈
+// 5.5 bits/pixel/frame including alpha), so size ≈ pixels × frames × bpp — no
+// ffmpeg load needed. qtrle is lossless RLE and wildly content-dependent, so we
+// don't guess: its real size is shown after encoding instead.
+const PRORES_4444_BPP = 5.5; // bits per pixel per frame (alpha-inclusive estimate)
+function updateMovEstimate(sourceTotal) {
+  const srcW = el.video.videoWidth, srcH = el.video.videoHeight;
+  if (!srcW) { setEstimate(el.movEstVal, el.tabSizeMov, '—'); return; }
+  const { scale, skip, codec } = getMovParams();
+  const gW = Math.round(srcW * scale / 2) * 2, gH = Math.round(srcH * scale / 2) * 2;
+  const frameCount = Math.max(1, Math.ceil(sourceTotal / skip));
+  if (codec === 'prores') {
+    const bytes = Math.round(gW * gH * frameCount * PRORES_4444_BPP / 8);
+    setEstimate(el.movEstVal, el.tabSizeMov, '≈ ' + formatSizeMB(bytes));
+    el.movEstNote.textContent = `${frameCount} 幀 · ${gW}×${gH} · ProRes 概估`;
+  } else {
+    // qtrle: keep the real size if we already encoded, else dash + hint.
+    if (!movBlob) setEstimate(el.movEstVal, el.tabSizeMov, '—');
+    el.movEstNote.textContent = `${frameCount} 幀 · qtrle 依畫面內容而定，編碼後顯示`;
+  }
 }
 
 // Toggle the stale style on an estimate value + its tab badge together.

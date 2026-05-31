@@ -26,9 +26,17 @@
 <body>
 
 <header class="app-bar">
-  <div class="brand">
-    <span class="brand-mark" aria-hidden="true"></span>
-    <span class="brand-name">bgremove</span>
+  <div class="app-bar-left">
+    <div class="brand">
+      <span class="brand-mark" aria-hidden="true"></span>
+      <span class="brand-name">bgremove</span>
+      <span class="brand-tagline">影片去背，逐幀精確</span>
+    </div>
+    <ul class="nav-points">
+      <li><svg class="tick" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M3.5 8.4l3 3 6-7" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>全程在瀏覽器內運算</li>
+      <li><svg class="tick" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M3.5 8.4l3 3 6-7" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>檔案不上傳、不外流</li>
+      <li><svg class="tick" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M3.5 8.4l3 3 6-7" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>輸出無浮水印</li>
+    </ul>
   </div>
   <button class="theme-toggle" id="themeToggle" type="button" aria-label="切換亮色／暗色主題" title="切換亮色／暗色主題">
     <svg class="icon-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3 7 7 0 0 0 21 12.8z"/></svg>
@@ -37,21 +45,6 @@
 </header>
 
 <main class="shell">
-
-  <section class="hero">
-    <div class="hero-copy">
-      <h1>影片去背，逐幀精確。</h1>
-      <p class="subtitle">
-        上傳影片 → 逐幀去背 → 一鍵輸出透明背景的動態 WebP（libwebp WASM，alpha 可靠）。
-        也可匯出動態 GIF、透明 WebM 或 PNG 序列。
-      </p>
-    </div>
-    <ul class="hero-points">
-      <li><span class="check" aria-hidden="true">✓</span> 全程在瀏覽器內運算</li>
-      <li><span class="check" aria-hidden="true">✓</span> 檔案不上傳、不外流</li>
-      <li><span class="check" aria-hidden="true">✓</span> 輸出無浮水印</li>
-    </ul>
-  </section>
 
   <!-- ── STUDIO · preview (left) + controls (right) ─────── -->
   <div class="studio">
@@ -66,6 +59,8 @@
         <span class="vp-label">原始幀 · SOURCE<span class="vp-dims" id="srcMeta"></span></span>
         <span class="vp-meta" id="coordHint"></span>
       </div>
+      <!-- invisible twin of the OUTPUT hint: keeps both stages vertically aligned at any width -->
+      <p class="vp-hint vp-hint-ghost" aria-hidden="true">打開「<b>殘留</b>」開關會持續以<span class="hl-chip">螢光色</span>標出殘留像素；點右上 <b>ALPHA</b> 可切到遮罩檢視（純黑＝完全透明）。</p>
       <div class="vp-stage">
         <canvas id="srcCanvas" width="480" height="270" style="cursor:crosshair"></canvas>
         <div class="vp-drop" id="dropPrompt">
@@ -91,10 +86,10 @@
                 title="點擊切換 Alpha 遮罩檢視：白＝不透明、純黑＝完全透明">ALPHA</span>
         </span>
       </div>
-      <div class="vp-stage">
+      <p class="vp-hint">打開「<b>殘留</b>」開關會持續以<span class="hl-chip">螢光色</span>標出殘留像素；點右上 <b>ALPHA</b> 可切到遮罩檢視（純黑＝完全透明）。</p>
+      <div class="vp-stage vp-stage-out">
         <canvas id="outCanvas" width="480" height="270"></canvas>
       </div>
-      <p class="vp-hint">打開「<b>殘留</b>」開關會持續以<span class="hl-chip">螢光色</span>標出殘留像素；點右上 <b>ALPHA</b> 可切到遮罩檢視（純黑＝完全透明）。</p>
     </div>
   </section>
 
@@ -419,6 +414,11 @@
       <div class="output-copy">
         <div class="export-title">透明 MOV</div>
         <div class="export-desc">剪輯軟體用，保留 alpha 通道</div>
+      </div>
+      <div class="est-bar" id="movEst" aria-live="polite">
+        <span class="est-label">EST. MOV SIZE</span>
+        <span class="est-value" id="movEstVal">—</span>
+        <span class="est-note" id="movEstNote">上傳影片後即時估算</span>
       </div>
       <div class="controls">
         <button class="btn-brand" id="movBtn" disabled>轉成透明 MOV</button>
