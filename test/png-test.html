@@ -1,0 +1,75 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>PNG encoder test</title>
+<pre id="out">running…</pre>
+<script src="../vendor/pako.min.js"></script>
+<script src="../vendor/UPNG.js"></script>
+<script type="module">
+import { encodePng, estimatePngBytes } from '../js/png-encoder.js';
+
+const log = [];
+const say = m => { log.push(m); document.getElementById('out').textContent = log.join('\n'); };
+
+// Build a test image: smooth RGB gradient (stresses banding) + a soft radial
+// alpha falloff (stresses per-pixel alpha through the palette).
+const W = 640, H = 480;
+const cv = document.createElement('canvas');
+cv.width = W; cv.height = H;
+const ctx = cv.getContext('2d');
+const img = ctx.createImageData(W, H);
+const cx = W / 2, cy = H / 2, maxR = Math.hypot(cx, cy);
+for (let y = 0; y < H; y++) {
+  for (let x = 0; x < W; x++) {
+    const i = (y * W + x) * 4;
+    img.data[i]     = Math.round(255 * x / W);          // R gradient →
+    img.data[i + 1] = Math.round(255 * y / H);          // G gradient ↓
+    img.data[i + 2] = Math.round(255 * (1 - x / W));    // B gradient ←
+    const r = Math.hypot(x - cx, y - cy) / maxR;         // 0 center → 1 corner
+    img.data[i + 3] = Math.max(0, Math.min(255, Math.round(255 * (1 - r))));
+  }
+}
+
+// Decode a blob back to verify it's a valid PNG of the right size.
+function decode(blob) {
+  return new Promise((res, rej) => {
+    const url = URL.createObjectURL(blob);
+    const im = new Image();
+    im.onload = () => { URL.revokeObjectURL(url); res({ w: im.naturalWidth, h: im.naturalHeight }); };
+    im.onerror = () => { URL.revokeObjectURL(url); rej(new Error('decode failed')); };
+    im.src = url;
+  });
+}
+
+const kb = b => (b / 1024).toFixed(1) + ' KB';
+
+(async () => {
+  try {
+    say(`globals: UPNG=${!!window.UPNG} pako=${!!window.pako}`);
+    say(`source: ${W}×${H} RGBA, ${kb(W * H * 4)} raw\n`);
+
+    const cases = [
+      { name: 'lossless',          opts: { mode: 'lossless' } },
+      { name: 'lossy 256',         opts: { mode: 'lossy', colors: 256, dither: false } },
+      { name: 'lossy 64',          opts: { mode: 'lossy', colors: 64,  dither: false } },
+      { name: 'lossy 64 + dither', opts: { mode: 'lossy', colors: 64,  dither: true  } },
+      { name: 'lossy 16 + dither', opts: { mode: 'lossy', colors: 16,  dither: true  } },
+    ];
+
+    let losslessBytes = 0;
+    for (const c of cases) {
+      const t0 = performance.now();
+      const blob = encodePng(img, c.opts);
+      const ms = (performance.now() - t0).toFixed(0);
+      const est = estimatePngBytes(img, c.opts);
+      const dim = await decode(blob);
+      const ok = dim.w === W && dim.h === H && est === blob.size;
+      if (c.name === 'lossless') losslessBytes = blob.size;
+      const pct = losslessBytes ? ` (${Math.round(100 * blob.size / losslessBytes)}% of lossless)` : '';
+      say(`${ok ? 'PASS' : 'FAIL'}  ${c.name.padEnd(18)} ${kb(blob.size).padStart(10)}${pct}  decode ${dim.w}×${dim.h}  est=${est === blob.size ? 'match' : 'MISMATCH'}  ${ms}ms`);
+    }
+    say('\nDONE');
+  } catch (e) {
+    say('ERROR: ' + (e && e.stack || e));
+  }
+})();
+</script>

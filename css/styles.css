@@ -144,8 +144,8 @@ body {
   top: 0;
   z-index: 10;
 }
-/* left cluster: brand + slogan + selling points, all hugging the left edge */
-.app-bar-left { display: flex; align-items: center; gap: var(--s-4); min-width: 0; }
+/* left cluster: brand + input-switch on the left, selling points pushed right */
+.app-bar-left { display: flex; align-items: center; gap: var(--s-4); min-width: 0; flex: 1; }
 .brand { display: flex; align-items: center; gap: var(--s-2); min-width: 0; }
 .brand-mark {
   width: 15px; height: 15px; border-radius: 50%; flex-shrink: 0;
@@ -169,6 +169,7 @@ body {
   list-style: none; display: flex; align-items: stretch;
   background: var(--surface); border: 1px solid var(--line);
   border-radius: 999px; padding: 4px 6px;
+  margin-left: auto; /* push the selling points to the right edge */
 }
 .nav-points li {
   display: flex; align-items: center; gap: 7px; white-space: nowrap;
@@ -462,6 +463,32 @@ canvas { width: 100%; display: block; }
 .tab:hover { color: var(--text-2); }
 .tab.active { background: var(--surface-2); color: var(--text); box-shadow: 0 1px 0 oklch(0 0 0 / 0.3); }
 html[data-theme="light"] .tab.active { background: #fff; box-shadow: 0 1px 3px oklch(0 0 0 / 0.25); }
+
+/* ── Input-mode switch (影片 ↔ 圖片) · segmented control in the nav bar ── */
+.input-switch {
+  display: inline-flex; gap: 3px; width: max-content; flex-shrink: 0;
+  padding: 3px; background: var(--inset);
+  border: 1px solid var(--line); border-radius: var(--r-sm);
+}
+.imode {
+  display: inline-flex; align-items: center; gap: 7px;
+  padding: 6px 14px; border: none; border-radius: 5px;
+  background: transparent; color: var(--text-3);
+  font-family: inherit; font-size: 13px; font-weight: 500;
+  cursor: pointer; white-space: nowrap;
+  transition: color .15s var(--ease), background .15s var(--ease);
+}
+.imode svg { width: 15px; height: 15px; flex-shrink: 0; }
+.imode:hover { color: var(--text-2); }
+.imode.active { background: var(--surface-2); color: var(--text); box-shadow: 0 1px 0 oklch(0 0 0 / 0.3); }
+.imode:focus-visible { outline: 2px solid var(--text); outline-offset: 2px; }
+html[data-theme="light"] .imode.active { background: #fff; box-shadow: 0 1px 3px oklch(0 0 0 / 0.25); }
+/* below the laptop breakpoint the nav slogan + points hide; keep the switch
+   compact by dropping its labels to icons only so it never crowds the bar */
+@media (max-width: 560px) {
+  .imode { padding: 7px 10px; font-size: 0; gap: 0; }
+  .imode svg { width: 17px; height: 17px; }
+}
 
 /* ── Chroma color row ──────────────────────────────────── */
 .color-row {

@@ -4,6 +4,7 @@ import { encodeAnimatedWebP, estimateWebpBytes } from './webp-anim.js';
 import { encodeAnimatedGif, estimateGifBytes } from './gif-anim.js';
 import { extractFrames, estimateMemoryBytes } from './pipeline.js';
 import { encodeMov, encodeWebm, estimateWebmBytes } from './mov-encoder.js';
+import { encodePng, estimatePngBytes } from './png-encoder.js';
 
 // ── Constants ──────────────────────────────────────────────
 const FPS = 30;
@@ -95,6 +96,24 @@ const el = {
   residueVal: $('residueVal'),
   residueToggle: $('residueToggle'),
   themeToggle: $('themeToggle'),
+  // ── image mode ──
+  dropStrong: $('dropStrong'),
+  srcVpLabel: $('srcVpLabel'),
+  videoExport: $('videoExport'),
+  imageExport: $('imageExport'),
+  pngScale: $('pngScale'),
+  pngWidthInput: $('pngWidthInput'),
+  pngHeightVal: $('pngHeightVal'),
+  pngMode: $('pngMode'),
+  pngColors: $('pngColors'),
+  pngColorsVal: $('pngColorsVal'),
+  pngColorsRow: $('pngColorsRow'),
+  pngDither: $('pngDither'),
+  pngDitherRow: $('pngDitherRow'),
+  pngImgBtn: $('pngImgBtn'),
+  downloadPngImgBtn: $('downloadPngImgBtn'),
+  pngImgEstVal: $('pngImgEstVal'),
+  pngImgEstNote: $('pngImgEstNote'),
 };
 const srcCtx = el.srcCanvas.getContext('2d', { willReadFrequently: true });
 const outCtx = el.outCanvas.getContext('2d');
@@ -102,6 +121,11 @@ const workCtx = el.workCanvas.getContext('2d', { willReadFrequently: true });
 
 // ── Mutable state ──────────────────────────────────────────
 let mode = 'luma';
+let inputMode = 'video'; // 'video' | 'image' — top-level input switch
+let imageEl = null;      // loaded HTMLImageElement (image mode)
+let pngImgBlob = null;   // single transparent PNG (image mode)
+let imgEstTimer = null;  // debounce handle for the PNG size estimate
+let imgEstToken = 0;     // guards against stale async PNG estimates
 let isPicking = false;
 let outputBlob = null;   // webm
 let zipBlob = null;      // png sequence zip
@@ -148,6 +172,60 @@ document.querySelectorAll('.tab').forEach(tab => {
   });
 });
 
+// ── Input-mode switch (影片 ↔ 圖片) ─────────────────────────
+// Top-level toggle: 'video' keeps the full multi-format pipeline; 'image' swaps
+// the SOURCE to accept a still and the EXPORT to a single transparent PNG. The
+// keying panel + preview (applyKey / residue / ALPHA) are shared by both.
+document.querySelectorAll('.imode').forEach(btn => {
+  btn.addEventListener('click', () => setInputMode(btn.dataset.input));
+});
+
+function setInputMode(m) {
+  if (m !== 'video' && m !== 'image' || m === inputMode) return;
+  inputMode = m;
+  document.querySelectorAll('.imode').forEach(b => {
+    const on = b.dataset.input === m;
+    b.classList.toggle('active', on);
+    b.setAttribute('aria-selected', String(on));
+  });
+  const isImg = m === 'image';
+  el.videoExport.hidden = isImg;
+  el.imageExport.hidden = !isImg;
+  el.fileInput.accept = isImg ? 'image/*' : 'video/*';
+  el.dropStrong.textContent = isImg ? '拖放圖片，或點擊選擇' : '拖放影片，或點擊選擇';
+  el.srcVpLabel.childNodes[0].textContent = isImg ? '原始圖 · SOURCE' : '原始幀 · SOURCE';
+  el.reuploadBtn.textContent = isImg ? '↑ 上傳其他圖片' : '↑ 上傳其他影片';
+  el.reuploadBtn.title = isImg ? '上傳其他圖片（重新上傳）' : '上傳其他影片（重新上傳）';
+  resetWorkspace();
+}
+
+// Clear all loaded media + outputs back to the empty "drop a file" state. Shared
+// by the input-mode switch and used as the reset step before loading an image.
+function resetWorkspace() {
+  stopPlayback();
+  stopLivePlayback();
+  processedFrames = [];
+  imageEl = null;
+  previewIdx = 0;
+  hideFeedback();
+  el.progWrap.style.display = 'none';
+  el.previewBar.style.display = 'none';
+  el.dropZone.classList.remove('has-media');
+  outputBlob = zipBlob = webpBlob = gifBlob = movBlob = pngImgBlob = null;
+  webmEstBytes = null; webmEstKey = ''; webmEstExact = false;
+  if (el.srcCanvas.width) srcCtx.clearRect(0, 0, el.srcCanvas.width, el.srcCanvas.height);
+  if (el.outCanvas.width) outCtx.clearRect(0, 0, el.outCanvas.width, el.outCanvas.height);
+  el.srcMeta.textContent = '';
+  el.outLabel.textContent = '去背預覽 · OUTPUT';
+  updateResidueReadout(0);
+  for (const b of [el.processBtn, el.webmEstBtn, el.pngSeqBtn, el.webpBtn, el.gifBtn,
+                   el.movBtn, el.pngImgBtn, el.downloadBtn, el.downloadZipBtn,
+                   el.downloadWebpBtn, el.downloadGifBtn, el.downloadMovBtn,
+                   el.downloadPngImgBtn]) if (b) b.disabled = true;
+  el.pngImgEstVal.textContent = '—';
+  el.pngImgEstNote.textContent = '上傳圖片後即時估算';
+}
+
 // ── Upload ─────────────────────────────────────────────────
 // click the prompt (not the whole stage) so picking color on a loaded frame still works
 el.dropPrompt.addEventListener('click', () => el.fileInput.click());
@@ -159,8 +237,16 @@ el.dropZone.addEventListener('dragleave', () => el.dropZone.classList.remove('dr
 el.dropZone.addEventListener('drop', e => { e.preventDefault(); el.dropZone.classList.remove('dragover'); handleFile(e.dataTransfer.files[0]); });
 el.fileInput.addEventListener('change', () => handleFile(el.fileInput.files[0]));
 
+// Route a dropped/picked file by type, auto-switching the input mode so dropping
+// an image while in 影片 mode (or vice-versa) just works.
 function handleFile(file) {
-  if (!file || !file.type.startsWith('video/')) return;
+  if (!file) return;
+  if (file.type.startsWith('image/')) { setInputMode('image'); handleImageFile(file); }
+  else if (file.type.startsWith('video/')) { setInputMode('video'); handleVideoFile(file); }
+}
+
+function handleVideoFile(file) {
+  if (!file) return;
   baseName = file.name.replace(/\.[^.]+$/, '') || 'output'; // strip extension; keep original name
   stopPlayback();
   stopLivePlayback();
@@ -211,6 +297,172 @@ function handleFile(file) {
     el.movBtn.disabled = false;
   }, { once: true });
 }
+
+// ── Image mode: load a still, key it, export one transparent PNG ──
+function handleImageFile(file) {
+  if (!file) return;
+  baseName = file.name.replace(/\.[^.]+$/, '') || 'output';
+  resetWorkspace();
+  const img = new Image();
+  const url = URL.createObjectURL(file);
+  img.onload = () => {
+    imageEl = img;
+    const w = img.naturalWidth, h = img.naturalHeight;
+    [el.srcCanvas, el.outCanvas, el.workCanvas].forEach(c => { c.width = w; c.height = h; });
+    srcCtx.drawImage(img, 0, 0);
+    el.dropZone.classList.add('has-media');
+    configureImgWidthSlider(w);
+    el.srcMeta.textContent = `${w}×${h}`;
+    el.pngImgBtn.disabled = false;
+    livePreview();                 // key srcCanvas → outCanvas (+ schedule estimate)
+    URL.revokeObjectURL(url);
+  };
+  img.onerror = () => { showFeedback('error', '圖片載入失敗，請換一張圖試試'); URL.revokeObjectURL(url); };
+  img.src = url;
+}
+
+// Cap the PNG output width at the source width (no upscaling), default = full size.
+function configureImgWidthSlider(srcW) {
+  const minW = Math.min(64, srcW);
+  [el.pngScale, el.pngWidthInput].forEach(c => { c.min = minW; c.max = srcW; c.step = 2; });
+  el.pngScale.value = srcW;
+  el.pngWidthInput.value = srcW;
+  updatePngHeightHint();
+}
+function updatePngHeightHint() {
+  const srcW = el.srcCanvas.width, srcH = el.srcCanvas.height;
+  el.pngHeightVal.textContent = srcW
+    ? Math.round(srcH * parseInt(el.pngScale.value) / srcW)
+    : '—';
+}
+// Output dimensions for the PNG, clamped to source + snapped even.
+function pngImgDims() {
+  const srcW = el.srcCanvas.width, srcH = el.srcCanvas.height;
+  if (!srcW) return { gW: 0, gH: 0 };
+  const w = Math.max(1, Math.min(srcW, parseInt(el.pngScale.value) || srcW));
+  const gW = Math.round(w / 2) * 2 || w;
+  const gH = Math.max(1, Math.round(srcH * gW / srcW));
+  return { gW, gH };
+}
+
+// Compression settings from the PNG controls. mode 'lossless' keeps exact
+// pixels; 'lossy' quantises to `colors` palette entries (alpha preserved), with
+// optional Floyd–Steinberg dither.
+function getPngParams() {
+  return {
+    mode: el.pngMode.value,                 // 'lossless' | 'lossy'
+    colors: parseInt(el.pngColors.value),   // 2..256
+    dither: el.pngDither.checked,
+  };
+}
+
+// Key the current source frame and return its (optionally downscaled) RGBA
+// ImageData at the chosen output width. Shared by the PNG estimate + export.
+function renderImageData() {
+  const srcW = el.srcCanvas.width, srcH = el.srcCanvas.height;
+  const keyed = applyKey(srcCtx.getImageData(0, 0, srcW, srcH), getParams());
+  const { gW, gH } = pngImgDims();
+  const full = document.createElement('canvas');
+  full.width = srcW; full.height = srcH;
+  const fullCtx = full.getContext('2d', { willReadFrequently: true });
+  fullCtx.putImageData(keyed, 0, 0);
+  if (gW === srcW && gH === srcH) return fullCtx.getImageData(0, 0, gW, gH);
+  const scaled = document.createElement('canvas');
+  scaled.width = gW; scaled.height = gH;
+  const sctx = scaled.getContext('2d', { willReadFrequently: true });
+  sctx.imageSmoothingEnabled = true;
+  sctx.imageSmoothingQuality = 'high';
+  sctx.drawImage(full, 0, 0, gW, gH);
+  return sctx.getImageData(0, 0, gW, gH);
+}
+
+// Key the current source frame and encode it to a transparent PNG blob at the
+// chosen width + compression settings. Shared by the export button.
+function renderImagePng() {
+  return encodePng(renderImageData(), getPngParams());
+}
+
+// Debounced live PNG-size estimate (single frame, so we just encode the real
+// thing). Keying params + the width control both feed in via scheduleEstimate.
+function scheduleImgEstimate() {
+  if (imgEstTimer) clearTimeout(imgEstTimer);
+  imgEstTimer = setTimeout(updateImgEstimate, 220);
+}
+async function updateImgEstimate() {
+  if (inputMode !== 'image' || !imageEl) return;
+  const token = ++imgEstToken;
+  el.pngImgEstVal.classList.add('is-stale');
+  el.pngImgEstNote.textContent = '估算中…';
+  // Yield so the "估算中…" label paints before the (synchronous) encode blocks.
+  await new Promise(r => setTimeout(r, 0));
+  if (token !== imgEstToken) return;
+  try {
+    const params = getPngParams();
+    const bytes = estimatePngBytes(renderImageData(), params);
+    if (token !== imgEstToken) return;
+    const { gW, gH } = pngImgDims();
+    el.pngImgEstVal.textContent = '≈ ' + formatSizeMB(bytes);
+    el.pngImgEstVal.classList.remove('is-stale');
+    const desc = params.mode === 'lossy'
+      ? `${params.colors} 色${params.dither ? '＋抖色' : ''}`
+      : '無損';
+    el.pngImgEstNote.textContent = `${gW}×${gH} · ${desc}`;
+  } catch (e) {
+    if (token !== imgEstToken) return;
+    el.pngImgEstNote.textContent = '估算失敗';
+    console.error(e);
+  }
+}
+
+// PNG width controls (image mode) — mirror the slider ↔ number field, re-estimate.
+el.pngScale.addEventListener('input', () => { el.pngWidthInput.value = el.pngScale.value; updatePngHeightHint(); scheduleImgEstimate(); });
+el.pngWidthInput.addEventListener('input', () => syncPngWidthFromInput(false));
+el.pngWidthInput.addEventListener('change', () => syncPngWidthFromInput(true));
+function syncPngWidthFromInput(writeBack) {
+  const srcW = el.srcCanvas.width;
+  if (!srcW || inputMode !== 'image') return;
+  let w = parseInt(el.pngWidthInput.value);
+  if (isNaN(w)) { if (writeBack) el.pngWidthInput.value = el.pngScale.value; return; }
+  const minW = parseInt(el.pngScale.min), maxW = parseInt(el.pngScale.max);
+  w = Math.max(minW, Math.min(maxW, Math.round(w / 2) * 2));
+  el.pngScale.value = w;
+  if (writeBack) el.pngWidthInput.value = w;
+  updatePngHeightHint();
+  scheduleImgEstimate();
+}
+
+// PNG compression controls — lossy reveals the colour + dither rows; every
+// change re-estimates the size.
+function syncPngModeRows() {
+  const lossy = el.pngMode.value === 'lossy';
+  el.pngColorsRow.style.display = lossy ? '' : 'none';
+  el.pngDitherRow.style.display = lossy ? '' : 'none';
+}
+el.pngMode.addEventListener('change', () => { syncPngModeRows(); scheduleImgEstimate(); });
+el.pngColors.addEventListener('input', () => { el.pngColorsVal.textContent = el.pngColors.value; scheduleImgEstimate(); });
+el.pngDither.addEventListener('change', scheduleImgEstimate);
+
+// Export: render → auto-download the transparent PNG.
+el.pngImgBtn.addEventListener('click', async () => {
+  if (!imageEl) return;
+  pngImgBlob = null;
+  el.pngImgBtn.disabled = true;
+  el.downloadPngImgBtn.disabled = true;
+  el.pngImgEstNote.textContent = '編碼中…';
+  await new Promise(r => setTimeout(r, 0)); // let the disabled/編碼中 state paint
+  try {
+    pngImgBlob = await renderImagePng();
+    const { gW, gH } = pngImgDims();
+    showFeedback('success', `透明 PNG 完成 · ${gW}×${gH} · ${formatSize(pngImgBlob.size)} · 已自動下載`);
+    el.downloadPngImgBtn.disabled = false;
+    triggerDownload(pngImgBlob, `${baseName}-nobg.png`);
+  } catch (e) {
+    reportError('PNG 錯誤：', e);
+  }
+  el.pngImgBtn.disabled = false;
+  scheduleImgEstimate(); // restore the est-bar note after the "編碼中…" override
+});
+el.downloadPngImgBtn.addEventListener('click', () => { if (pngImgBlob) triggerDownload(pngImgBlob, `${baseName}-nobg.png`); });
 
 // ── Color picker ───────────────────────────────────────────
 el.pickBtn.addEventListener('click', () => {
@@ -946,6 +1198,7 @@ function formatSizeMB(bytes) {
 // Debounced — slider drags fire rapidly; only estimate once they settle. Both
 // formats re-estimate together, since each can be tuned independently.
 function scheduleEstimate() {
+  if (inputMode === 'image') { scheduleImgEstimate(); return; } // PNG output has its own estimate
   if (estTimer) clearTimeout(estTimer);
   estTimer = setTimeout(updateEstimates, 220);
 }
